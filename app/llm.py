@@ -62,6 +62,20 @@ class LLMProvider(ABC):
         """非流式（工具探测轮用）：返回 {"content", "tool_calls", "usage"}。"""
         raise NotImplementedError
 
+    @abstractmethod
+    async def stream_chat_with_tools(
+        self,
+        messages: list[dict],
+        params: Optional[ChatParams] = None,
+        tools: Optional[list[dict]] = None,
+    ) -> AsyncIterator[dict]:
+        """流式探测：边流边判断是否调用工具（思考实时可见）。
+
+        产出 {"kind": "reasoning"/"content", "text": ...}，
+        末尾必产出 {"kind": "tool_calls", "calls": [{"id","name","arguments"}]}。
+        """
+        raise NotImplementedError
+
 
 class MockProvider(LLMProvider):
     name = "mock"
@@ -84,6 +98,11 @@ class MockProvider(LLMProvider):
             "tool_calls": [],
             "usage": {},
         }
+
+    async def stream_chat_with_tools(self, messages, params=None, tools=None):
+        async for evt in self.stream_chat(messages, params):
+            yield evt
+        yield {"kind": "tool_calls", "calls": []}
 
 
 class DeepSeekProvider(LLMProvider):
@@ -138,6 +157,71 @@ class DeepSeekProvider(LLMProvider):
                     yield {"kind": "reasoning", "text": reasoning}
                 if delta.content:
                     yield {"kind": "content", "text": delta.content}
+
+    async def stream_chat_with_tools(self, messages, params=None, tools=None):
+        """流式探测：思考/正文实时流出；tool_calls 增量拼接，流末汇总产出。"""
+        params = params or ChatParams()
+        kwargs: dict = dict(
+            model=params.model,
+            messages=messages,
+            temperature=params.temperature,
+            top_p=params.top_p,
+            max_tokens=params.max_tokens,
+            presence_penalty=params.presence_penalty,
+            frequency_penalty=params.frequency_penalty,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        if tools:
+            kwargs["tools"] = tools
+        if params.thinking_enabled:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["reasoning_effort"] = params.reasoning_effort
+        else:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        stream = await self.client.chat.completions.create(**kwargs)
+        tool_acc: dict[int, dict] = {}
+        async for chunk in stream:
+            if chunk.usage:
+                u = chunk.usage
+                details = getattr(u, "completion_tokens_details", None)
+                self.last_usage = {
+                    "prompt_tokens": u.prompt_tokens,
+                    "prompt_cache_hit_tokens": getattr(u, "prompt_cache_hit_tokens", 0),
+                    "prompt_cache_miss_tokens": getattr(u, "prompt_cache_miss_tokens", 0),
+                    "completion_tokens": getattr(u, "completion_tokens", 0),
+                    "reasoning_tokens": getattr(details, "reasoning_tokens", 0),
+                }
+            if chunk.choices:
+                choice = chunk.choices[0]
+                delta = choice.delta
+                if choice.finish_reason:
+                    self.last_usage = {
+                        **(self.last_usage or {}),
+                        "finish_reason": choice.finish_reason,
+                    }
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    yield {"kind": "reasoning", "text": reasoning}
+                if delta.content:
+                    yield {"kind": "content", "text": delta.content}
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        acc = tool_acc.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+                        if tc.id:
+                            acc["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                acc["name"] = tc.function.name
+                            if tc.function.arguments:
+                                acc["arguments"] += tc.function.arguments
+        calls = [
+            {"id": a["id"], "name": a["name"], "arguments": a["arguments"]}
+            for a in tool_acc.values()
+            if a["name"]
+        ]
+        yield {"kind": "tool_calls", "calls": calls}
 
 
     async def complete(self, messages, params=None, tools=None):

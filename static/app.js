@@ -391,6 +391,7 @@ function renderRefsDrawer() {
 
 function renderSearchCard(msgEl, log, live = false) {
   let card = msgEl.querySelector(".search-card");
+  const wasOpen = card ? card.classList.contains("open") : false;
   if (!card) {
     card = document.createElement("div");
     card.className = "search-card" + (live ? " live" : "");
@@ -399,6 +400,7 @@ function renderSearchCard(msgEl, log, live = false) {
     else msgEl.appendChild(card);
   }
   card.classList.toggle("live", !!live);
+  if (wasOpen) card.classList.add("open");
   const queries = log.queries || [];
   const perQuery = log.perQuery || [];
   const sources = log.sources || [];
@@ -410,6 +412,11 @@ function renderSearchCard(msgEl, log, live = false) {
       ? "正在联网检索…"
       : "联网检索：" + queries.length + " 个关键词 · 参考 " + sources.length + " 个网页") +
     "</span>" +
+    (live
+      ? ""
+      : sources.length
+        ? '<span class="sc-more">查看全部</span>'
+        : "") +
     '<span class="sc-chevron">▾</span></button>' +
     '<div class="sc-body">' +
     queries

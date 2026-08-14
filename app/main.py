@@ -666,10 +666,6 @@ async def chat(req: ChatRequest):
     req_seq = _req_seq
     log.info("[chat #%d] 开始 cid=%s model=%s regen=%s search=%s", req_seq, cid, req.params.model, bool(regen), bool(tools))
 
-    def _chunks(s: str, n: int = 6):
-        for i in range(0, len(s), n):
-            yield s[i : i + n]
-
     async def event_stream():
         start = time.time()
         yield _sse({"event": "start", "mode": provider.name, "conversation_id": cid})
@@ -686,38 +682,43 @@ async def chat(req: ChatRequest):
             db.add_message(cid, "user", req.message)
 
         try:
-            # 联网技能开启：先非流式探测一轮 —— 需要工具则执行后进入流式回答；
-            # 不需要工具则探测轮内容就是最终答案（避免二次调用导致内容重复）
+            # 联网技能开启：流式探测一轮（思考实时可见，不再"停住很久"）——
+            # 需要工具则执行后进入第二轮流式回答；不需要则探测轮内容就是答案
             if tools:
-                r1 = await provider.complete(msgs_for_llm, req.params, tools=tools)
-                if r1.get("usage"):
+                calls = None
+                async for evt in provider.stream_chat_with_tools(msgs_for_llm, req.params, tools):
+                    if evt["kind"] == "tool_calls":
+                        calls = evt["calls"]
+                    elif evt["kind"] == "reasoning":
+                        reasoning_text += evt["text"]
+                        yield _sse({"event": "delta", "kind": "reasoning", "text": evt["text"]})
+                    else:
+                        raw += evt["text"]
+                        yield _sse({"event": "delta", "kind": "content", "text": evt["text"]})
+                    await asyncio.sleep(0)
+                probe_usage = dict(provider.last_usage or {})
+                if probe_usage:
                     metrics.record(
-                        r1["usage"], req.params.model,
+                        probe_usage, req.params.model,
                         int((time.time() - start) * 1000), cache_invalidated,
                         conversation_id=cid,
                     )
-                if r1["tool_calls"]:
-                    # 探测轮的思考先输出（模型在思考"要不要搜索"）——
-                    # 修复：搜索技能开启时思考发生在非流式探测轮，不输出则思考链消失
-                    if r1.get("reasoning_content"):
-                        reasoning_text = r1["reasoning_content"]
-                        for ch in _chunks(reasoning_text, 16):
-                            yield _sse({"event": "delta", "kind": "reasoning", "text": ch})
+                probe_reasoning = reasoning_text
+                if calls:
                     # 联网检索日志：前端渲染搜索卡（关键词/网页/可展开详情）
                     search_log = {"queries": [], "per_query": [], "sources": []}
                     # 工具结果进【波动区】尾部（缓存只保住它之前的前缀）
                     tool_msgs = [{
                         "role": "assistant",
-                        "content": r1["content"] or "",  # DSH：空内容回传 ''（非 null），字节稳定
-                        **({"reasoning_content": r1["reasoning_content"]}
-                           if r1.get("reasoning_content") else {}),
+                        "content": raw or "",  # DSH：空内容回传 ''（非 null），字节稳定
+                        **({"reasoning_content": probe_reasoning} if probe_reasoning else {}),
                         "tool_calls": [
                             {"id": tc["id"], "type": "function",
                              "function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                            for tc in r1["tool_calls"]
+                            for tc in calls
                         ],
                     }]
-                    for tc in r1["tool_calls"]:
+                    for tc in calls:
                         if tc["name"] == "web_fetch":
                             try:
                                 url = (json.loads(tc["arguments"]) or {}).get("url", "")
@@ -761,17 +762,10 @@ async def chat(req: ChatRequest):
                             "results": len(srcs), "sources": srcs,
                         })
                     msgs_for_llm = [*msgs_for_llm, *tool_msgs]
+                    raw = ""  # 第二轮重新流式（探测轮正文只是"决定搜索"的过渡）
                 else:
-                    # 没触发工具：探测轮内容就是答案（分块补流式观感），不再二次调用；
-                    # 探测轮的思考同样输出（修复思考链消失）
-                    raw = r1["content"]
+                    # 没触发工具：探测轮内容就是答案（已流式展示），不再二次调用
                     needs_stream = False
-                    if r1.get("reasoning_content"):
-                        reasoning_text = r1["reasoning_content"]
-                        for ch in _chunks(reasoning_text, 16):
-                            yield _sse({"event": "delta", "kind": "reasoning", "text": ch})
-                    for ch in _chunks(raw):
-                        yield _sse({"event": "delta", "kind": "content", "text": ch})
 
             # 保存本次实际路由的消息快照：后台摘要任务复用它做 prefix-extension（DSH 实践）
             _last_routed[cid] = (list(msgs_for_llm), req.params.model)
