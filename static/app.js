@@ -49,27 +49,35 @@ let streaming = false;
 
 // ---------- Markdown 渲染（marked + DOMPurify + mermaid，多 CDN 兜底） ----------
 
+// 本地优先（static/vendor/，v0.20.1 下载落盘，国内秒开）→ CDN 兜底
 const CDN_SOURCES = {
   marked: [
-    "https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js",
+    "vendor/marked.min.js",
     "https://registry.npmmirror.com/marked/12.0.2/files/marked.min.js",
+    "https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js",
   ],
   dompurify: [
-    "https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js",
+    "vendor/purify.min.js",
     "https://registry.npmmirror.com/dompurify/3.1.6/files/dist/purify.min.js",
+    "https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js",
   ],
   mermaid: [
-    "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js",
+    "vendor/mermaid.min.js",
     "https://registry.npmmirror.com/mermaid/10.9.1/files/dist/mermaid.min.js",
+    "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js",
   ],
 };
 
-function loadScript(src) {
+function loadScript(src, timeoutMs = 8000) {
   return new Promise((res, rej) => {
     const s = document.createElement("script");
     s.src = src;
-    s.onload = res;
-    s.onerror = rej;
+    const t = setTimeout(() => {
+      s.remove();
+      rej(new Error("加载超时: " + src));
+    }, timeoutMs);
+    s.onload = () => { clearTimeout(t); res(); };
+    s.onerror = () => { clearTimeout(t); rej(new Error("加载失败: " + src)); };
     document.head.appendChild(s);
   });
 }
@@ -1846,7 +1854,9 @@ async function init() {
   $("#status-dot").className = "dot";
   $("#status-text").textContent = "加载中…";
 
-  await loadLibs();
+  // 库加载不阻塞 UI（本地 vendor 毫秒级；CDN 兜底带 8s 超时）。
+  // markdown 渲染对未就绪的库有纯文本降级，列表/技能面板不再被 CDN 卡住。
+  loadLibs().catch(() => {});
   updateEmptyState();
   setSendState();
   restoreParams();
