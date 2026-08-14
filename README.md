@@ -24,6 +24,13 @@ uvicorn app.main:app --reload
 
 打开 http://127.0.0.1:8000
 
+**开发者自检**（每批改动后）：
+```bash
+python -m pytest              # 单元测试 19 项（零 API 成本，隔离数据）
+python scripts/smoke.py 8100  # HTTP 冒烟 22 项（需服务器已启动）
+node scripts/check-ui.mjs     # 前端回归（孤儿 id + 重复函数哨兵）
+```
+
 首次使用：点侧边栏 **⚙ 设置** 填入 DeepSeek API Key → **测试连接** → 保存。未填 key 时聊天自动使用模拟回复。
 
 ## 目录结构

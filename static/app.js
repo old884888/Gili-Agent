@@ -2095,6 +2095,35 @@ async function init() {
   refreshMemoryBar();
 }
 
+// ---------- 前端错误上报（开发者日志） ----------
+function reportFrontendError(level, message, source, stack) {
+  try {
+    const body = JSON.stringify({ level, message, source, stack: (stack || "").slice(0, 1500) });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/api/log", new Blob([body], { type: "application/json" }));
+    } else {
+      fetch("/api/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true,
+      }).catch(() => {});
+    }
+  } catch { /* 上报失败静默 */ }
+}
+window.addEventListener("error", (e) => {
+  reportFrontendError("error", e.message || "未知错误", e.filename || "", e.error && e.error.stack);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason;
+  reportFrontendError(
+    "error",
+    (r && (r.message || String(r))) || "未处理的 Promise 拒绝",
+    location.href,
+    r && r.stack
+  );
+});
+
 init();
 
 /* ============================================================================

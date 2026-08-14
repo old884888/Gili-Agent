@@ -97,12 +97,29 @@ _prefix_fps: dict[str, str] = {}
 # 最近一次路由消息快照（cid → (messages, model)）：供后台摘要请求复用 warm 前缀
 _last_routed: dict[str, tuple[list[dict], str]] = {}
 
+# 请求序号（日志归组用：chat 起止与后台任务都带 #N）
+_req_seq = 0
+
 
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
 # ---------- 基础 ----------
+
+@app.post("/api/log")
+async def frontend_log(body: dict):
+    """前端错误上报（window.onerror / unhandledrejection）——落盘到开发者日志。"""
+    level = str(body.get("level") or "error")
+    message = str(body.get("message") or "")[:500]
+    source = str(body.get("source") or "")[:200]
+    stack = str(body.get("stack") or "")[:1500]
+    if level == "warning":
+        log.warning("[frontend] %s (%s)", message, source)
+    else:
+        log.error("[frontend] %s (%s)\n%s", message, source, stack)
+    return {"status": "ok"}
+
 
 @app.get("/api/health")
 async def health():
@@ -644,7 +661,10 @@ async def chat(req: ChatRequest):
     cache_invalidated = (prev_fp is not None and prev_fp != fp) or history_trimmed
     _prefix_fps[cid] = fp
 
-    log.info("[chat] 开始 cid=%s model=%s regen=%s search=%s", cid, req.params.model, bool(regen), bool(tools))
+    global _req_seq
+    _req_seq += 1
+    req_seq = _req_seq
+    log.info("[chat #%d] 开始 cid=%s model=%s regen=%s search=%s", req_seq, cid, req.params.model, bool(regen), bool(tools))
 
     def _chunks(s: str, n: int = 6):
         for i in range(0, len(s), n):
@@ -816,8 +836,8 @@ async def chat(req: ChatRequest):
             return
 
         log.info(
-            "[chat] 完成 cid=%s 用时%dms hit=%s miss=%s out=%s",
-            cid, latency,
+            "[chat #%d] 完成 cid=%s 用时%dms hit=%s miss=%s out=%s",
+            req_seq, cid, latency,
             usage.get("prompt_cache_hit_tokens", 0),
             usage.get("prompt_cache_miss_tokens", 0),
             usage.get("completion_tokens", 0),

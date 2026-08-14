@@ -15,3 +15,6 @@ deepseek-harness/
 .chrome-cdp-test-profile/
 *.lnk
 
+
+.test-tmp/
+tests/.tmp/
