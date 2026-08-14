@@ -86,6 +86,21 @@ DSH：cacheHitRate = cacheRead / (input + cacheRead + cacheWrite)（缓存写也
 
 对照修复前（hit 恒 384-512、miss 涨到数千）。模拟器预测同会话连续请求对命中率 45.6% → 71.8%，实测单会话 82-88%（短消息历史占比小，长对话收益更大）。**整体命中率预期从 13.5% 提升到 40-60%+**（取决于聊天模式：首请求与跨天 TTL 过期仍会 miss，属机制固有）。
 
+
+## 5.5 DSH 深挖补充发现（源码仓库级，2026-08-14 子代理报告合并）
+
+1. **前缀稳定是涌现的，不是管理的**（DSH《reconstructable-requests》原话：Prefix-cache stability is corollary #1, not the headline: an append-only log projected by a per-node pure function yields requests that are append-extensions of their predecessors whenever the header is unchanged — stability is emergent, not managed）。我们的对应物：消息表 = 日志，build_prompt = 纯函数，指纹 = header 变化检测。本次线序修复后该性质成立。
+
+2. **DSH 实为两区，不是三区**：低频内容要么稳定化进信封（system），要么 append 到历史尾部，没有中间态。我们的低频区（摘要+事实）本质是「会变的信封后缀」——摘要重写时其后历史整体失效一轮，但替换点之前（稳定区）仍命中，与 DSH 的 replace 语义等价。保留三区设计，但明确：低频区重写 = replace 点，语义正确、已记账。
+
+3. **命中率分母核验 ✅**：DSH 提醒 DeepSeek 的 prompt_tokens 含命中、需减掉 hit 后再算。实测我们 57 条日志 prompt_tokens == hit + miss **恒成立**，且 hit/(hit+miss) 与 DSH 公式（cacheWrite=0 时）等价 → 我们的 13.5% 是真实值而非虚低，修复后 82-88% 同样真实。
+
+4. **thinking 模型的工具轮必须回传 reasoning_content**（DSH 实践）→ 已修复：llm.complete 捕获并回传；工具轮 assistant 消息携带 reasoning_content；空 content 回传空串（非 null，字节稳定）。
+
+5. **缓存域是 provider×model 级**：v4-flash 与 v4-pro 不共享缓存；切换模型后首个请求必然 miss。
+
+6. **压缩阈值参考**（记录在案）：DSH 用 0.8×上下文触发、保留 0.16 尾部、裁最老整段、边界对齐闭合工具对；我们现用预算×0.35 保留窗口，个人场景够用，不迁移。
+
 ## 6. 后续候选（P2）
 
 1. **稳定区扩充**：把固定 few-shot / 回答格式约定并入稳定区（增大命中基数，顺带提升回复质量）

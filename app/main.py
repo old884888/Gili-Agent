@@ -656,7 +656,9 @@ async def chat(req: ChatRequest):
                     # 工具结果进【波动区】尾部（缓存只保住它之前的前缀）
                     tool_msgs = [{
                         "role": "assistant",
-                        "content": r1["content"] or None,
+                        "content": r1["content"] or "",  # DSH：空内容回传 ''（非 null），字节稳定
+                        **({"reasoning_content": r1["reasoning_content"]}
+                           if r1.get("reasoning_content") else {}),
                         "tool_calls": [
                             {"id": tc["id"], "type": "function",
                              "function": {"name": tc["name"], "arguments": tc["arguments"]}}

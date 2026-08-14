@@ -172,8 +172,11 @@ class DeepSeekProvider(LLMProvider):
             "reasoning_tokens": getattr(details, "reasoning_tokens", 0),
             "finish_reason": resp.choices[0].finish_reason,
         }
+        # DSH 实践（thinking 模型）：带工具调用的轮次必须回传 reasoning_content，
+        # 供下一轮 assistant tool_calls 消息原样携带
         return {
             "content": msg.content or "",
+            "reasoning_content": getattr(msg, "reasoning_content", None) or "",
             "tool_calls": [
                 {"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
                 for tc in (msg.tool_calls or [])
