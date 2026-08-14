@@ -182,6 +182,7 @@ class DeepSeekProvider(LLMProvider):
 
         stream = await self.client.chat.completions.create(**kwargs)
         tool_acc: dict[int, dict] = {}
+        intent_emitted = False
         async for chunk in stream:
             if chunk.usage:
                 u = chunk.usage
@@ -207,6 +208,9 @@ class DeepSeekProvider(LLMProvider):
                 if delta.content:
                     yield {"kind": "content", "text": delta.content}
                 if delta.tool_calls:
+                    if not intent_emitted:
+                        intent_emitted = True
+                        yield {"kind": "tool_intent"}  # 模型决定搜索 → 前端立即亮搜索动画
                     for tc in delta.tool_calls:
                         acc = tool_acc.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
                         if tc.id:

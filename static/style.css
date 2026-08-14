@@ -1142,6 +1142,13 @@ select.dd-native { display: none !important; }
   display: flex; align-items: center; gap: 6px;
 }
 .key-card.hidden { display: none; }
+.key-status {
+  flex: 1;
+  font-size: calc(10.5px * var(--fs));
+  color: #86efac;
+  text-align: right;
+}
+
 .key-card-icon { flex-shrink: 0; }
 .key-mask { flex: 1; min-width: 0; word-break: break-all; }
 .key-card-actions { display: flex; gap: 6px; flex-shrink: 0; }

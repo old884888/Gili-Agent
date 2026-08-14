@@ -687,6 +687,9 @@ async def chat(req: ChatRequest):
             if tools:
                 calls = None
                 async for evt in provider.stream_chat_with_tools(msgs_for_llm, req.params, tools):
+                    if evt["kind"] == "tool_intent":
+                        yield _sse({"event": "tool-intent"})
+                        continue
                     if evt["kind"] == "tool_calls":
                         calls = evt["calls"]
                     elif evt["kind"] == "reasoning":

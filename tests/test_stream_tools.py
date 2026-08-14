@@ -105,6 +105,9 @@ def test_tool_call_accumulation():
     events = asyncio.run(_collect(_provider(chunks)))
     kinds = [e["kind"] for e in events]
     assert "reasoning" in kinds and "content" in kinds
+    # 搜索意图在工具调用汇总之前发出（前端立即亮搜索动画）
+    assert "tool_intent" in kinds
+    assert kinds.index("tool_intent") < kinds.index("tool_calls")
     last = events[-1]
     assert last["kind"] == "tool_calls"
     assert last["calls"] == [{"id": "call_1", "name": "web_search", "arguments": ARG1 + ARG2}]

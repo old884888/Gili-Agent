@@ -402,7 +402,7 @@ function renderSearchCard(msgEl, log, live = false) {
   card.classList.toggle("live", !!live);
   if (wasOpen) card.classList.add("open");
   const queries = log.queries || [];
-  const perQuery = log.perQuery || [];
+  const perQuery = log.per_query || [];
   const sources = log.sources || [];
   card.innerHTML =
     '<button type="button" class="sc-head">' +
@@ -1178,6 +1178,10 @@ $("#btn-settings").onclick = () => {
 
 let clearApiKey = false;
 $("#btn-apply-key").onclick = async () => {
+  // 输入框已有新 key 时先确认，避免"显示已存"覆盖用户刚输入的内容
+  if ($("#in-key").value.trim()) {
+    if (!confirm("输入框里已有一个密钥，用已保存的密钥覆盖它？")) return;
+  }
   try {
     const r = await api("/api/settings/reveal-key", {
       method: "POST",
@@ -1244,7 +1248,7 @@ $("#btn-save-settings").onclick = async () => {
         tavily_api_key: $("#in-tavily-key").value.trim(),
       }),
     });
-    toast("设置已保存");
+    toast("已保存并应用 · 立即生效");
     $("#settings-modal").classList.add("hidden");
     await loadSettings();
     await renderSkills();
@@ -2308,10 +2312,14 @@ let _reasoningPaintFrame = 0;
 let _lastReasoningPaint = 0;
 
 function streamRenderReasoning(box, raw) {
-  // 思考链默认折叠时完全不碰 DOM；用户展开时才用节流刷新，
-  // 避免 1 万字思考链每 token 都重建一次 textContent。
+  // 收起态也节流更新（显示滚动尾部"直播"），展开态才全量刷新
   box.dataset.raw = raw;
-  if (box.classList.contains("hidden")) return;
+  const wrap = box.closest(".reasoning-wrap");
+  const open = wrap && wrap.classList.contains("open");
+  const paint = () => {
+    box.textContent = box.dataset.raw || "";
+    if (!open) box.scrollTop = box.scrollHeight;
+  };
 
   const now = performance.now();
   if (now - _lastReasoningPaint < 80) {
@@ -2319,7 +2327,7 @@ function streamRenderReasoning(box, raw) {
       _reasoningPaintFrame = requestAnimationFrame(() => {
         _reasoningPaintFrame = 0;
         _lastReasoningPaint = performance.now();
-        box.textContent = box.dataset.raw || "";
+        paint();
       });
     }
     return;
@@ -2327,7 +2335,7 @@ function streamRenderReasoning(box, raw) {
   if (_reasoningPaintFrame) cancelAnimationFrame(_reasoningPaintFrame);
   _reasoningPaintFrame = 0;
   _lastReasoningPaint = now;
-  box.textContent = raw;
+  paint();
 }
 
 function flushReasoningRender() {
@@ -2364,13 +2372,14 @@ function ensureReasoningBlock(el, live = false) {
       '<button type="button" class="reasoning-toggle">' +
       '<span class="pulse-dot"></span><span class="rt-label">💭 思考中…</span>' +
       '<span class="rt-count"></span><span class="rt-chevron">▾</span></button>' +
-      '<div class="reasoning hidden"></div>';
+      '<div class="reasoning"></div>';
     const btn = wrap.querySelector(".reasoning-toggle");
-    const box = wrap.querySelector(".reasoning");
     btn.onclick = () => {
-      box.classList.toggle("hidden");
-      btn.classList.toggle("open", !box.classList.contains("hidden"));
-      if (!box.classList.contains("hidden")) box.textContent = box.dataset.raw || "";
+      const open = wrap.classList.toggle("open");
+      btn.classList.toggle("open", open);
+      const box = wrap.querySelector(".reasoning");
+      // 展开：回到顶部读全文；收起：滚到尾部继续看"直播"
+      box.scrollTop = open ? 0 : box.scrollHeight;
     };
     el.insertBefore(wrap, el.querySelector(".content"));
   }
@@ -2450,11 +2459,15 @@ async function sendChat(text, regenId) {
         }
         if (evt.event === "start") {
           currentConv = evt.conversation_id || currentConv;
+        } else if (evt.event === "tool-intent") {
+          // 模型在思考中决定要搜索 → 立即亮出搜索动画（不必等探测轮结束）
+          if (!searchLog) searchLog = { queries: [], per_query: [], sources: [] };
+          renderSearchCard(msgEl, searchLog, true);
         } else if (evt.event === "tool") {
           // 联网检索卡：live 动画 + 逐关键词/网页累积
-          if (!searchLog) searchLog = { queries: [], perQuery: [], sources: [] };
+          if (!searchLog) searchLog = { queries: [], per_query: [], sources: [] };
           searchLog.queries.push(evt.query || "");
-          searchLog.perQuery.push(Array.isArray(evt.sources) ? evt.sources : []);
+          searchLog.per_query.push(Array.isArray(evt.sources) ? evt.sources : []);
           (evt.sources || []).forEach((s) => {
             if (!searchLog.sources.some((x) => x.url === s.url)) searchLog.sources.push(s);
           });
