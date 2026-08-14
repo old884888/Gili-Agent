@@ -1732,6 +1732,95 @@ async function answerLearningOption(val) {
   }
 }
 
+// 确认摘要卡片：字段可点改（选择类点击切换 / 文本类内联编辑）
+function renderPlanEdit(box, qo) {
+  const plan = qo.plan || {};
+  const assumed = qo.assumed || [];
+  const FIELDS = [
+    { key: "subject", label: "📚 想学", type: "text" },
+    { key: "goal", label: "🎯 真实目标", type: "text" },
+    { key: "level_from", label: "🎚 当前水平", type: "choice", opts: ["零基础", "入门", "进阶"] },
+    { key: "level_to", label: "🎯 目标水平", type: "choice", opts: ["入门", "进阶", "精通"] },
+    { key: "style", label: "🧭 计划风格", type: "choice", opts: ["详细（章节拆细）", "精炼（结构清晰）"] },
+  ];
+  for (const f of FIELDS) {
+    const row = document.createElement("div");
+    row.className = "plan-field";
+    const label = document.createElement("span");
+    label.className = "plan-label";
+    label.textContent = f.label;
+    const val = document.createElement("span");
+    val.className = "plan-val" + (assumed.includes(f.key) ? " assumed" : "");
+    if (f.type === "choice") {
+      const chip = document.createElement("button");
+      chip.className = "plan-chip";
+      chip.textContent = plan[f.key] || "（未指定）";
+      chip.title = "点击切换";
+      chip.onclick = async () => {
+        chip.disabled = true;
+        const cur = plan[f.key];
+        const next = f.opts[(f.opts.indexOf(cur) + 1) % f.opts.length];
+        await editPlanField(f.key, next);
+      };
+      val.appendChild(chip);
+    } else {
+      val.textContent = plan[f.key] || "（未填写）";
+      const btn = document.createElement("button");
+      btn.className = "plan-edit-btn";
+      btn.textContent = "✏️";
+      btn.title = "点击修改";
+      btn.onclick = () => {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "plan-input";
+        input.value = plan[f.key] || "";
+        input.placeholder = f.key === "subject" ? "想学什么？" : "想达到什么效果？例如：两个月内能独立爬网站";
+        val.innerHTML = "";
+        val.appendChild(input);
+        input.focus();
+        let busy = false;
+        const commit = async () => {
+          if (busy) return;
+          const v = input.value.trim();
+          if (!v) {
+            val.textContent = plan[f.key] || "（未填写）";
+            val.appendChild(btn);
+            return;
+          }
+          busy = true;
+          await editPlanField(f.key, v);
+        };
+        input.onkeydown = (e) => {
+          if (e.key === "Enter") { e.preventDefault(); commit(); }
+          else if (e.key === "Escape") {
+            val.textContent = plan[f.key] || "（未填写）";
+            val.appendChild(btn);
+          }
+        };
+        input.onblur = () => { if (document.contains(input)) commit(); };
+      };
+      val.appendChild(btn);
+    }
+    row.appendChild(label);
+    row.appendChild(val);
+    box.appendChild(row);
+  }
+}
+
+async function editPlanField(field, value) {
+  try {
+    const r = await api("/api/learning/mode", {
+      method: "POST",
+      body: JSON.stringify({ conversation_id: currentConv, action: "edit-plan", field, value }),
+    });
+    if (r.status === "error") { toast("修改失败：" + (r.detail || "")); return; }
+    await reloadCurrentConv();
+    scrollToBottom(true);
+  } catch (e) {
+    toast("修改失败: " + e.message);
+  }
+}
+
 $("#btn-learning").onclick = enterLearningMode;
 $("#btn-learning-docs").onclick = () => { loadLearningProjects().then(openLearningCenter); };
 
@@ -2755,7 +2844,23 @@ function appendMessage(role, text, typing = false, extra = {}) {
       ? { opts: extra.quickOptions, input: false, placeholder: "" }
       : Object.assign({ opts: [], input: false, placeholder: "" }, extra.quickOptions || {});
     const opts = Array.isArray(qo.opts) ? qo.opts : [];
-    if (opts.length) {
+    if (qo.kind === "plan_edit") {
+      // 确认摘要卡片：字段可点改（选择类点击切换 / 文本类内联编辑）
+      const box = document.createElement("div");
+      box.className = "msg-options plan-card";
+      renderPlanEdit(box, qo);
+      for (const o of opts) {
+        const b = document.createElement("button");
+        b.className = "opt-chip confirm-chip";
+        b.textContent = o;
+        b.onclick = async () => {
+          b.disabled = true;
+          await answerLearningOption(o);
+        };
+        box.appendChild(b);
+      }
+      el.appendChild(box);
+    } else if (opts.length) {
       const box = document.createElement("div");
       box.className = "msg-options";
       for (const o of opts) {

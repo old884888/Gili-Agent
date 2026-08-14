@@ -903,6 +903,28 @@ async def summarize_memory(body: dict | None = None):
     }
 
 
+def _update_summary_message(cid: str, st: dict) -> None:
+    """点改计划字段后：原位更新确认摘要消息的内容与可编辑卡片。"""
+    mid = st.get("summary_msg_id")
+    if not mid:
+        return
+    msg = learning_skill.question_message(st)
+    if msg.get("kind") != "plan_edit":
+        return
+    db.update_message_content(mid, msg["content"])
+    db.update_message_quick_options(
+        mid,
+        json.dumps({
+            "kind": "plan_edit",
+            "plan": msg.get("plan") or {},
+            "assumed": (msg.get("plan") or {}).get("assumed") or [],
+            "opts": msg["quick_options"],
+            "input": False,
+            "placeholder": "",
+        }, ensure_ascii=False),
+    )
+
+
 # ---------- 学习模式（AI 决策式引导，引导消息直接落库到对话） ----------
 
 def _opts_json(opts: list, input_mode: bool = False, placeholder: str = "") -> str | None:
@@ -914,13 +936,23 @@ def _opts_json(opts: list, input_mode: bool = False, placeholder: str = "") -> s
     )
 
 
-def _emit_guide(cid: str, st: dict) -> None:
+def _emit_guide(cid: str, st: dict, fallback: bool = False) -> None:
     """生成并落库一条 AI 引导消息（含选项卡/自定义输入框）。"""
-    msg = learning_skill.question_message(st)
-    db.add_message(
-        cid, "assistant", msg["content"],
-        quick_options=_opts_json(msg["quick_options"], msg.get("input", False), msg.get("placeholder", "")),
-    )
+    msg = learning_skill.question_message(st, fallback)
+    if msg.get("kind") == "plan_edit":
+        qo = json.dumps({
+            "kind": "plan_edit",
+            "plan": msg.get("plan") or {},
+            "assumed": (msg.get("plan") or {}).get("assumed") or [],
+            "opts": msg["quick_options"],
+            "input": False,
+            "placeholder": "",
+        }, ensure_ascii=False)
+    else:
+        qo = _opts_json(msg["quick_options"], msg.get("input", False), msg.get("placeholder", ""))
+    row = db.add_message(cid, "assistant", msg["content"], quick_options=qo)
+    if msg.get("kind") == "plan_edit":
+        learning_skill.note_summary_msg(cid, row["id"])
     db.touch(cid)
 
 
@@ -965,13 +997,8 @@ async def _learning_intercept(cid: str, user_text: str) -> JSONResponse:
     st = await learning_skill.answer(user_text, cid, provider)
     if learning_skill.snapshot(st)["done"]:
         return JSONResponse(await _create_project_flow(cid))
-    msg = learning_skill.question_message(st)
-    db.add_message(
-        cid, "assistant", msg["content"],
-        quick_options=_opts_json(msg["quick_options"], msg.get("input", False), msg.get("placeholder", "")),
-    )
-    db.touch(cid)
-    snap = learning_skill.snapshot(st)
+    _emit_guide(cid, st, fallback=provider.name != "deepseek")
+    snap = learning_skill.snapshot(st, fallback=provider.name != "deepseek")
     return JSONResponse({
         "mode": "learning", "status": "ask",
         "step": snap.get("step", len(st["history"]) + 1), "done": snap["done"],
@@ -1002,6 +1029,16 @@ async def learning_mode(body: dict | None = None):
     if existing:
         return {"status": "has_project", "project": existing}
 
+    if b.get("action") == "edit-plan":
+        # 确认摘要卡片点改字段 → 原位更新摘要消息
+        try:
+            st = learning_skill.edit_plan(cid, str(b.get("field") or ""), str(b.get("value") or ""))
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        _update_summary_message(cid, st)
+        snap = learning_skill.snapshot(st)
+        return {"status": "ask", "step": len(st["history"]) + 1, "done": snap["done"]}
+
     answer_val = b.get("answer")
     if answer_val is not None:
         st = learning_skill.get(cid)
@@ -1013,7 +1050,7 @@ async def learning_mode(body: dict | None = None):
         settings = config.load()
         provider = llm.make_provider(settings)
         st = await learning_skill.answer(str(answer_val), cid, provider)
-        _emit_guide(cid, st)  # 落库下一条引导消息
+        _emit_guide(cid, st, fallback=provider.name != "deepseek")  # 落库下一条引导消息
     else:
         created = not learning_skill.has(cid)
         st = None
@@ -1033,7 +1070,7 @@ async def learning_mode(body: dict | None = None):
             st = learning_skill.start(cid)
             created = True
         if created:
-            _emit_guide(cid, st)  # 落库第 1 问
+            _emit_guide(cid, st, fallback=provider.name != "deepseek")  # 落库第 1 问
     snap = learning_skill.snapshot(st)
     return {"status": "ask", "step": snap.get("step", len(st["history"]) + 1), "done": snap["done"]}
 

@@ -879,6 +879,37 @@ select:focus { outline: none; border-color: var(--accent); }
 .opt-chip:hover:not(:disabled) { background: var(--accent); color: #fff; }
 .opt-chip:disabled { opacity: 0.45; cursor: default; }
 
+/* 学习引导确认摘要卡片（可点改字段） */
+.plan-card { flex-direction: column; align-items: stretch; gap: 6px; }
+.plan-field { display: flex; align-items: center; gap: 10px; }
+.plan-label { flex: 0 0 auto; font-size: calc(12px * var(--fs)); color: var(--dim); }
+.plan-val { flex: 1; display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.plan-chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--stroke);
+  color: var(--text);
+  border-radius: 20px;
+  padding: 3px 12px;
+  font-size: calc(12px * var(--fs));
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.plan-chip:hover:not(:disabled) { border-color: var(--accent); }
+.plan-chip:disabled { opacity: 0.5; cursor: default; }
+.plan-val.assumed .plan-chip { border-style: dashed; color: var(--dim); }
+.plan-edit-btn {
+  background: transparent; border: none; color: var(--dim); cursor: pointer;
+  font-size: calc(11px * var(--fs)); padding: 2px 4px;
+}
+.plan-edit-btn:hover { color: var(--text); }
+.plan-input {
+  flex: 1; min-width: 0;
+  background: var(--bg3); color: var(--text);
+  border: 1px solid var(--accent); border-radius: 6px;
+  padding: 3px 8px; font-size: calc(12px * var(--fs));
+}
+.confirm-chip { align-self: flex-start; }
+
 /* 学习中心 */
 .learning-cards { display: flex; flex-direction: column; gap: 16px; margin-top: 10px; }
 .learning-card {

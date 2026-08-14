@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
@@ -124,6 +125,11 @@ _SCHEMA: list[str] = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_kb_source ON knowledge_chunks(source_type, source_id)",
     "CREATE INDEX IF NOT EXISTS idx_kb_project ON knowledge_chunks(project_id)",
+    """CREATE TABLE IF NOT EXISTS learning_onboard (
+        key TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        updated_at TEXT
+    )""",
 ]
 
 
@@ -222,6 +228,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("messages", "sources", "ALTER TABLE messages ADD COLUMN sources TEXT"),
         ("conversations", "memory_group", "ALTER TABLE conversations ADD COLUMN memory_group TEXT"),
         ("learning_projects", "current_chapter", "ALTER TABLE learning_projects ADD COLUMN current_chapter TEXT"),
+        ("learning_projects", "goal", "ALTER TABLE learning_projects ADD COLUMN goal TEXT DEFAULT ''"),
     ]:
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
         if col not in cols:
@@ -432,6 +439,35 @@ def update_message_content(mid: str, content: str) -> None:
     )
 
 
+def update_message_quick_options(mid: str, quick_options: str | None) -> None:
+    _exec("UPDATE messages SET quick_options=? WHERE id=?", (quick_options, mid))
+
+
+# ---------- 学习引导状态（持久化：重启不丢） ----------
+
+def save_onboard_state(key: str, state: str) -> None:
+    _exec(
+        """INSERT INTO learning_onboard (key, state, updated_at) VALUES (?,?,?)
+           ON CONFLICT(key) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at""",
+        (key, state, _now()),
+    )
+
+
+def load_onboard_state(key: str) -> dict | None:
+    rows = _query("SELECT state FROM learning_onboard WHERE key=?", (key,))
+    if not rows:
+        return None
+    try:
+        data = json.loads(rows[0]["state"])
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def delete_onboard_state(key: str) -> None:
+    _exec("DELETE FROM learning_onboard WHERE key=?", (key,))
+
+
 def deactivate_group(group: str) -> None:
     _exec("UPDATE messages SET is_active=0 WHERE version_group=?", (group,))
 
@@ -589,14 +625,21 @@ def upsert_summary(cid: str, content: str) -> None:
 # ---------- 学习模式 ----------
 
 def create_learning_project(
-    subject: str, level_from: str, level_to: str, style: str, conversation_id: str
+    subject: str,
+    level_from: str,
+    level_to: str,
+    style: str,
+    conversation_id: str,
+    goal: str = "",
 ) -> dict:
     pid = "p" + uuid.uuid4().hex[:8]
     t = _now()
     _exec(
-        """INSERT INTO learning_projects (id, subject, level_from, level_to, style, status, progress_pct, conversation_id, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (pid, subject, level_from, level_to, style, "active", 0, conversation_id, t, t),
+        """INSERT INTO learning_projects
+           (id, subject, level_from, level_to, style, goal, status, progress_pct,
+            conversation_id, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (pid, subject, level_from, level_to, style, goal, "active", 0, conversation_id, t, t),
     )
     return get_learning_project(pid)
 

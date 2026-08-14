@@ -33,10 +33,13 @@ SUBJECT_CHIPS = FIRST_QUESTION["options"]
 
 # 未配置 LLM 时的固定回退提问（顺序推进，最终确认）
 FALLBACK_QUESTIONS = [
-    {"question": "现在的基础怎么样？", "input": False, "options": ["零基础", "入门", "进阶"]},
-    {"question": "想达到什么水平？", "input": False, "options": ["入门", "进阶", "精通"]},
-    {"question": "更想要哪种学习计划？", "input": False, "options": ["详细（章节拆细）", "精炼（结构清晰）"]},
+    {"question": "现在的基础怎么样？", "field": "level_from", "input": False, "options": ["零基础", "入门", "进阶"]},
+    {"question": "想达到什么水平？", "field": "level_to", "input": False, "options": ["入门", "进阶", "精通"]},
+    {"question": "更想要哪种学习计划？", "field": "style", "input": False, "options": ["详细（章节拆细）", "精炼（结构清晰）"]},
 ]
+
+SKIP_LABEL = "⏭ 跳过（用默认）"
+STOP_WORDS = ("就这样", "就这些", "不用问", "不问了", "直接开始", "直接生成", "开始吧", "可以了", "够了", "差不多了")
 
 _onboard: dict[str, dict] = {}  # 会话 id → 引导状态
 
@@ -47,41 +50,85 @@ def _fmt_date() -> str:
 
 def _new_state() -> dict:
     return {
-        "history": [],   # [{"question": str, "answer": str}]
+        "history": [],   # [{"question": str, "answer": str, "field": str?}]
         "pending": None,  # 下一问 dict（AI 决策结果）
         "phase": "ask",   # ask / confirm / done
-        "plan": None,     # {"subject","level_from","level_to","style"}
+        "plan": None,     # {"subject","level_from","level_to","style","goal"}
         "subject": None,
+        "assumed": [],    # 被默认填充的字段（确认摘要标注「假设」）
+        "provided": [],   # 用户明确提供过的字段（区别于默认填充）
+        "summary_msg_id": None,  # 确认摘要消息 id（点改字段时原位更新）
     }
 
 
+def _save(key: str, st: dict) -> None:
+    """引导状态持久化（SQLite）——问到一半重启应用也不丢。"""
+    try:
+        db.save_onboard_state(key, json.dumps(st, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 —— 持久化失败不阻塞引导（内存态仍可用）
+        pass
+
+
 def start(key: str) -> dict:
-    """开始学习引导（key = 会话 id）。已有状态则原样返回，不重置。"""
+    """开始学习引导（key = 会话 id）。已有状态（含上次未完成的持久化状态）则原样返回。"""
     if key not in _onboard:
-        _onboard[key] = _new_state()
+        _onboard[key] = db.load_onboard_state(key) or _new_state()
     return _onboard[key]
 
 
 def get(key: str) -> dict | None:
-    st = _onboard.get(key)
+    st = _onboard.get(key) or db.load_onboard_state(key)
+    if st is not None:
+        _onboard[key] = st
     return _step_data(st) if st else None
 
 
 def has(key: str) -> bool:
-    return key in _onboard
+    return key in _onboard or db.load_onboard_state(key) is not None
 
 
 def clear(key: str) -> None:
     _onboard.pop(key, None)
+    db.delete_onboard_state(key)
 
 
 def forget(cid: str) -> None:
     """清理会话级内存态（删除会话时调用，防泄漏）。"""
-    _onboard.pop(cid, None)
+    clear(cid)
     _pending_updates.pop(cid, None)
     _user_turns.pop(cid, None)
     _last_proposal_turn.pop(cid, None)
     _choose_chapter.pop(cid, None)
+
+
+def note_summary_msg(key: str, mid: str) -> None:
+    """记录确认摘要消息 id（点改字段时原位更新该消息）。"""
+    st = _onboard.get(key) or start(key)
+    st["summary_msg_id"] = mid
+    _save(key, st)
+
+
+def edit_plan(key: str, field: str, value: str) -> dict:
+    """确认阶段修改计划字段（前端摘要卡片点改）。改完该字段脱离「假设」。"""
+    st = _onboard.get(key) or db.load_onboard_state(key)
+    if not st or st["phase"] not in ("confirm", "done"):
+        raise ValueError("当前不在确认阶段")
+    if field == "subject":
+        st["plan"] = _normalize_plan({**(st.get("plan") or {}), "subject": value}, st)
+        st["subject"] = str(value).strip()[:60]
+    elif field == "goal":
+        st["plan"] = _normalize_plan({**(st.get("plan") or {}), "goal": value}, st)
+    elif field in ("level_from", "level_to", "style"):
+        st["plan"] = _normalize_plan({**(st.get("plan") or {}), field: value}, st)
+    else:
+        raise ValueError("未知字段")
+    if field in st["assumed"]:
+        st["assumed"].remove(field)
+    if field in ("level_from", "level_to", "style", "goal", "subject") and field not in st["provided"]:
+        st["provided"].append(field)
+    _onboard[key] = st
+    _save(key, st)
+    return st
 
 
 def _pending_question(st: dict) -> dict:
@@ -94,7 +141,7 @@ def _pending_question(st: dict) -> dict:
     return FALLBACK_QUESTIONS[idx]
 
 
-def _step_data(st: dict) -> dict:
+def _step_data(st: dict, fallback: bool = False) -> dict:
     """给 API / 消息模板用的状态快照。"""
     if st["phase"] == "recommend":
         plan = st.get("plan") or {}
@@ -115,22 +162,27 @@ def _step_data(st: dict) -> dict:
                 **plan,
                 "subject": (plan.get("subject") or st.get("subject") or "").strip(),
                 "confirm": True,
+                "assumed": list(st.get("assumed") or []),
+                "goal": plan.get("goal") or "",
             },
         }
     q = _pending_question(st)
+    opts = list(q.get("options", []))
+    if fallback and q.get("field"):
+        opts.append(SKIP_LABEL)  # 无 key 模式也可跳过（用默认 + 标假设）
     return {
         "done": False,
         "step": len(st["history"]) + 1,
         "question": q["question"],
         "input": bool(q.get("input", False)),
         "placeholder": q.get("placeholder", "") or "",
-        "options": list(q.get("options", [])),
+        "options": opts,
     }
 
 
-def snapshot(st: dict) -> dict:
+def snapshot(st: dict, fallback: bool = False) -> dict:
     """原始状态 → API 快照（供路由层使用）。"""
-    return _step_data(st)
+    return _step_data(st, fallback)
 
 
 async def recommend(key: str, provider, transcript: str) -> dict | None:
@@ -158,26 +210,52 @@ async def recommend(key: str, provider, transcript: str) -> dict | None:
         st["subject"] = str(data["subject"]).strip()[:60]
         st["plan"] = _normalize_plan(data, st)
         _onboard[key] = st
+        _save(key, st)
         return st
     except Exception:
         return None
 
 
 async def answer(answer: str, key: str, provider) -> dict:
-    """记录用户回答并让 AI 决策：下一问 or 确认创建。"""
+    """记录用户回答并让 AI 决策：下一问 or 确认创建。
+
+    问题数动态：信息说全了 1 问即可确认；次要缺口默认填充并标「假设」；
+    用户随时喊停（"就这样吧"）；fallback 模式支持「跳过」。
+    """
     st = _onboard.get(key) or start(key)
     text = (answer or "").strip()
     if not text:
         return st
 
-    asked = _pending_question(st)["question"]
-    st["history"].append({"question": asked, "answer": text})
+    asked_q = _pending_question(st)
+    asked_text = asked_q["question"]
+    field = asked_q.get("field")
+    skip = text in ("跳过", "略过", SKIP_LABEL)
+
+    # fallback 模式的「跳过」：字段记默认 + 标假设，直接进下一问；问完收尾确认
+    if skip and field:
+        st["history"].append({"question": asked_text, "answer": "（跳过）", "field": field})
+        if field not in st["assumed"]:
+            st["assumed"].append(field)
+        st["pending"] = None
+        if len(st["history"]) - 1 >= len(FALLBACK_QUESTIONS):
+            _finalize(st)
+            st["phase"] = "confirm"
+        else:
+            st["phase"] = "ask"
+        _save(key, st)
+        return st
+
+    st["history"].append({"question": asked_text, "answer": text})
+    if field and field not in st["provided"]:
+        st["provided"].append(field)
     if not st.get("subject"):
         st["subject"] = text
 
     # 用户在确认摘要页继续回答 = 确认创建
     if st["phase"] == "confirm":
         st["phase"] = "done"
+        _save(key, st)
         return st
     # 推荐确认：点「确认创建」直接建项目；点「重新填写」回到自定义提问
     if st["phase"] == "recommend":
@@ -186,11 +264,38 @@ async def answer(answer: str, key: str, provider) -> dict:
         else:
             _onboard[key] = _new_state()
             st = _onboard[key]
+        _save(key, st)
+        return st
+
+    # 用户喊停：立即用现有信息收尾（缺失字段默认 + 标假设）
+    if _is_stop(text):
+        _finalize(st)
+        st["pending"] = None
+        st["phase"] = "confirm"
+        _save(key, st)
         return st
 
     decision = await _decide_next(provider, st)
+    # 先吸收 LLM 从本轮回答里抽取到的信息（增量更新 plan）
+    if isinstance(decision.get("updates"), dict):
+        merged = {**(st.get("plan") or {}), **decision["updates"]}
+        st["plan"] = _normalize_plan(merged, st)
+        if str((decision["updates"].get("goal") or "")).strip():
+            st["plan"]["goal"] = str(decision["updates"]["goal"]).strip()[:200]
+        for f, v in decision["updates"].items():
+            if f in ("level_from", "level_to", "style", "goal") and str(v or "").strip():
+                if f not in st["provided"]:
+                    st["provided"].append(f)
+        for f in decision.get("assume") or []:
+            if f in ("level_from", "level_to", "style") and f not in st["assumed"]:
+                st["assumed"].append(f)
+
     if decision.get("action") == "confirm":
-        st["plan"] = _normalize_plan(decision.get("plan") or {}, st)
+        st["plan"] = _normalize_plan(decision.get("plan") or st.get("plan") or {}, st)
+        for f in decision.get("assume") or []:
+            if f in ("level_from", "level_to", "style") and f not in st["assumed"]:
+                st["assumed"].append(f)
+        _finalize(st)
         st["pending"] = None
         st["phase"] = "confirm"
     else:
@@ -201,44 +306,82 @@ async def answer(answer: str, key: str, provider) -> dict:
             "input": bool(decision.get("input")),
             "placeholder": str(decision.get("placeholder") or "")[:90],
         }
+        if decision.get("field"):
+            st["pending"]["field"] = decision["field"]
         st["phase"] = "ask"
 
-    # 安全阀：问题数量封顶，避免无限追问
-    if len(st["history"]) >= 6:
-        st["plan"] = _normalize_plan(st.get("plan") or {}, st)
+    # 安全阀：问题数量封顶，收尾确认（不会无限追问）
+    if len(st["history"]) >= 8:
+        _finalize(st)
         st["pending"] = None
         st["phase"] = "confirm"
+    _save(key, st)
     return st
 
 
+def _is_stop(text: str) -> bool:
+    """用户明确表示"别再问了，直接生成"。"""
+    t = (text or "").strip()
+    return len(t) <= 12 and any(w in t for w in STOP_WORDS)
+
+
+def _finalize(st: dict) -> None:
+    """用现有信息收尾：吸收 fallback 已答字段，未提供的字段填默认并标「假设」。"""
+    raw = dict(st.get("plan") or {})
+    for h in st["history"]:
+        f = h.get("field")
+        if f and h.get("answer") and h["answer"] != "（跳过）":
+            raw.setdefault(f, h["answer"])
+            if f not in st["provided"]:
+                st["provided"].append(f)
+    plan = _normalize_plan(raw, st)
+    for f in ("level_from", "level_to", "style"):
+        if f not in st["provided"] and f not in st["assumed"]:
+            st["assumed"].append(f)
+    st["plan"] = plan
+
+
 async def _decide_next(provider, st: dict) -> dict:
-    """让 LLM 决定：继续追问还是信息已足够。失败时回退固定问题。"""
+    """让 LLM 一次完成两件事：从回答里抽取信息更新计划，并决定追问还是确认。
+
+    问题数动态（没有下限）：字段齐全立即 confirm，哪怕只有 1 问；
+    次要缺口（风格等）允许用 assume 默认填充，不再追问。失败时回退固定问题。
+    """
     if getattr(provider, "name", "") != "deepseek":
         return _fallback_decision(st)
 
     transcript = "\n".join(
         f"- 问：{h['question']}\n  答：{h['answer']}" for h in st["history"]
     )
+    plan_now = st.get("plan") or {}
     system = (
         "你是 Gili 的学习规划师，正在用对话帮用户设计一份学习计划。\n"
+        "计划字段：subject（想学的学科/技能，必填）、level_from（当前水平：零基础/入门/进阶）、"
+        "level_to（目标水平：入门/进阶/精通）、style（计划风格：详细（章节拆细）/精炼（结构清晰））、"
+        "goal（真实目标场景，自由文本：多久、要能做什么、为什么学；可选，但能抽取就抽取）。\n"
         "规则：\n"
-        "1. 一次只问一个最关键的问题；问题必须针对用户刚说的内容，不要重复已经问过的。\n"
-        "2. 能用选项就用选项（2-4 个短选项）；信息无法选项化时让用户自由输入（input=true）。\n"
-        "3. 当已经能确定「学科、当前水平、目标水平、计划风格」时，立即输出 confirm，不要继续问。\n"
-        "4. 总共不要超过 4-5 个问题。\n"
+        "1. 先从用户全部回答里抽取信息：能确定的字段放进 updates；没有说的不要编造。\n"
+        "2. 字段齐全就立即 confirm——问题数没有下限，用户一句话说全了一个多余的问题都别问；"
+        "goal 没提到不算缺字段，不要为它追问。\n"
+        "3. 需要追问时一次只问一个最关键的问题；能用选项就用选项（2-4 个短选项），否则 input=true；不要重复问已经问过的。\n"
+        "4. 次要字段缺失时直接放进 assume 用默认值，放进 assume 的字段不再追问："
+        "level_from 默认「零基础」，level_to 默认「入门」，style 默认「精炼（结构清晰）」。\n"
+        "5. 总共不超过 5 个问题。\n"
         "只输出 JSON，不要多余文字：\n"
-        '{"action":"ask","question":"...","options":["..."],"input":false,"placeholder":""}\n'
-        '或 {"action":"confirm","plan":{"subject":"...","level_from":"零基础/入门/进阶","level_to":"入门/进阶/精通","style":"详细（章节拆细）/精炼（结构清晰）"}}'
+        '{"action":"ask","updates":{...},"assume":["..."],"question":"...","options":["..."],"input":false,"placeholder":""}\n'
+        '或 {"action":"confirm","updates":{...},"assume":["..."],"plan":{"subject":"...","level_from":"...","level_to":"...","style":"...","goal":"..."}}'
     )
     user = (
         f"用户想学：{st.get('subject') or '（待确认）'}\n"
-        f"已收集的信息：\n{transcript}\n\n"
-        "请决定：继续问一个最关键的问题，还是信息已经足够、准备生成计划？"
+        f"已收集的信息：\n{transcript}\n"
+        f"当前已确定的计划字段：{json.dumps(plan_now, ensure_ascii=False)}\n"
+        f"已按默认假设的字段：{st.get('assumed') or '无'}\n\n"
+        "请决定：confirm 还是再问一个最关键的问题？"
     )
     try:
         resp = await provider.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            ChatParams(thinking_enabled=False, temperature=0.25, max_tokens=500),
+            ChatParams(thinking_enabled=False, temperature=0.25, max_tokens=700),
         )
         data = _parse_json(resp.get("content") or "")
         if isinstance(data, dict) and data.get("action") in ("ask", "confirm"):
@@ -284,12 +427,16 @@ def _normalize_plan(plan: dict, st: dict) -> dict:
         "level_from": level_from(plan.get("level_from")),
         "level_to": level_to(plan.get("level_to")),
         "style": style,
+        "goal": str(plan.get("goal") or "").strip()[:200],
     }
 
 
-def question_message(st: dict) -> dict:
-    """由状态生成 AI 引导消息：{content, quick_options, input, placeholder}。"""
-    d = _step_data(st)
+def question_message(st: dict, fallback: bool = False) -> dict:
+    """由状态生成 AI 引导消息：{content, quick_options, input, placeholder}。
+
+    确认阶段返回 kind="plan_edit"：前端渲染可点击修改的摘要卡片。
+    """
+    d = _step_data(st, fallback)
     if d.get("recommend"):
         plan = d["summary"]
         content = (
@@ -303,19 +450,39 @@ def question_message(st: dict) -> dict:
         return {"content": content, "quick_options": ["✅ 确认创建", "✍️ 重新填写"], "input": False}
     if d["done"]:
         plan = d["summary"]
-        content = (
-            "🎓 学习目标已确认，看看对不对：\n\n"
-            f"- 📚 想学：**{plan.get('subject', '')}**\n"
-            f"- 🎚 当前水平：{plan.get('level_from', '—')}\n"
-            f"- 🎯 目标水平：{plan.get('level_to', '—')}\n"
-            f"- 🧭 计划风格：{plan.get('style', '—')}\n\n"
-            "确认后我会**实时分析**并生成：**大纲 / 进度表 / 笔记 / 疑问本**。"
-        )
-        return {"content": content, "quick_options": ["✅ 确认创建"], "input": False}
+        assumed = plan.get("assumed") or []
+        lines = [
+            "🎓 学习目标已确认，看看对不对：",
+            "",
+            f"- 📚 想学：**{plan.get('subject', '')}**",
+            f"- 🎚 当前水平：{plan.get('level_from', '—')}",
+            f"- 🎯 目标水平：{plan.get('level_to', '—')}",
+            f"- 🧭 计划风格：{plan.get('style', '—')}",
+        ]
+        if plan.get("goal"):
+            lines.append(f"- 🎯 真实目标：{plan.get('goal')}")
+        if assumed:
+            lines += [
+                "",
+                "> 📌 虚线字段是我没问清、先按默认值**假设**的——点下方卡片可直接改。",
+            ]
+        lines += ["", "确认后我会**实时分析**并生成：**大纲 / 进度表 / 笔记 / 疑问本**。"]
+        return {
+            "content": "\n".join(lines),
+            "quick_options": ["✅ 确认创建"],
+            "input": False,
+            "kind": "plan_edit",
+            "plan": plan,
+        }
 
     content = f"🎓 学习模式 · 第 {d['step']} 问\n\n**{d['question']}**"
     if d.get("placeholder"):
         content += f"\n\n{d['placeholder']}"
+    if d["step"] == 1:
+        content += (
+            "\n\n> 💡 一次说全信息（比如「零基础，想两个月入门数据分析」）我可以少问甚至直接生成；"
+            "随时说「就这样吧」立即确认。"
+        )
     return {
         "content": content,
         "quick_options": d.get("options", []),
@@ -346,12 +513,14 @@ async def create_project(provider, key: str) -> dict:
     subject = plan["subject"]
     style_detailed = "详细" in plan.get("style", "")
 
+    goal = plan.get("goal") or ""
     prompt = (
         f"你是课程设计师。为「{subject}」设计学习计划。\n"
         f"用户当前水平：{plan.get('level_from', '零基础')}；目标水平：{plan.get('level_to', '入门')}。\n"
         f"风格：{'详细，拆成 8-12 个章节，每章一个明确主题' if style_detailed else '精炼，4-6 个章节，每章一个主题'}。\n"
-        '只输出 JSON（不要 markdown 代码围栏）：{"summary": "一句话计划概述", '
-        '"chapters": [{"title": "章节标题", "objective": "本章学习目标（一句话）"}]}'
+        + (f"用户真实目标场景：{goal}。章节设计必须服务于这个目标。\n" if goal else "")
+        + '只输出 JSON（不要 markdown 代码围栏）：{"summary": "一句话计划概述", '
+          '"chapters": [{"title": "章节标题", "objective": "本章学习目标（一句话）"}]}'
     )
     params = ChatParams(thinking_enabled=False, temperature=0.3, max_tokens=2500)
     chunks: list[str] = []
@@ -365,7 +534,8 @@ async def create_project(provider, key: str) -> dict:
     cid = key
     db.rename_conversation(cid, f"{subject}学习笔记")
     project = db.create_learning_project(
-        subject, plan.get("level_from", ""), plan.get("level_to", ""), plan.get("style", ""), cid
+        subject, plan.get("level_from", ""), plan.get("level_to", ""), plan.get("style", ""), cid,
+        goal=goal,
     )
     for i, ch in enumerate(data["chapters"], 1):
         db.add_learning_chapter(
@@ -462,6 +632,8 @@ def overview_text(ctx: dict, limit: int = 1600) -> str:
         f"水平 {p.get('level_from') or '零基础'} → {p.get('level_to') or '入门'}，"
         f"风格 {p.get('style') or '精炼'}，进度 {done}/{len(chapters)} 章。"
     ]
+    if p.get("goal"):
+        lines.append(f"用户真实目标：{p.get('goal')}。")
     if chapters:
         lines.append("大纲与章节状态：")
         for i, ch in enumerate(chapters, 1):
