@@ -88,6 +88,3 @@ def decrypt(value: str) -> str:
     except Exception:
         return ""
 
-
-def is_encrypted(value: str) -> bool:
-    return bool(value) and value.startswith(_PREFIX)

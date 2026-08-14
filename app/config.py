@@ -37,6 +37,8 @@ def load() -> dict:
         return dict(DEFAULTS)
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return dict(DEFAULTS)
         if data.get("default_model") in _LEGACY_MODELS:
             data["default_model"] = DEFAULTS["default_model"]
         merged = {**DEFAULTS, **data}

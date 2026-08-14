@@ -75,6 +75,15 @@ def clear(key: str) -> None:
     _onboard.pop(key, None)
 
 
+def forget(cid: str) -> None:
+    """清理会话级内存态（删除会话时调用，防泄漏）。"""
+    _onboard.pop(cid, None)
+    _pending_updates.pop(cid, None)
+    _user_turns.pop(cid, None)
+    _last_proposal_turn.pop(cid, None)
+    _choose_chapter.pop(cid, None)
+
+
 def _pending_question(st: dict) -> dict:
     """当前该展示的问题：首问 → pending → 回退序列。"""
     if not st["history"]:
@@ -441,46 +450,6 @@ def project_context(cid: str) -> dict | None:
         "questions": db.list_learning_questions(project["id"]),
         "notes": db.list_note_meta(project["id"]),
     }
-
-
-def context_text(ctx: dict, limit: int = 2000) -> str:
-    """把项目上下文压成一段给聊天模型看的紧凑文本。"""
-    p = ctx["project"]
-    chapters = ctx.get("chapters") or []
-    done = sum(1 for c in chapters if c.get("status") == "done")
-    lines = [
-        f"当前对话已绑定学习项目「{p.get('subject', '')}」："
-        f"水平 {p.get('level_from') or '零基础'} → {p.get('level_to') or '入门'}，"
-        f"风格 {p.get('style') or '精炼'}，进度 {done}/{len(chapters)} 章。"
-    ]
-    if chapters:
-        lines.append("大纲与章节状态：")
-        for i, ch in enumerate(chapters, 1):
-            mark = "已完成" if ch.get("status") == "done" else "待学习"
-            objective = f" —— {ch.get('objective', '')}" if ch.get("objective") else ""
-            lines.append(f"{i}. {ch.get('title', '')}【{mark}】{objective}")
-    questions = ctx.get("questions") or []
-    if questions:
-        lines.append("挂起疑问：")
-        for q in questions[:8]:
-            lines.append(f"- {q.get('question', '')}")
-    notes = ctx.get("notes") or []
-    if notes:
-        remaining = limit - len("\n".join(lines))
-        if remaining > 80:
-            note_lines = ["笔记摘要："]
-            for n in notes[:4]:
-                fpath = NOTES_DIR / str(p.get("id", "")) / str(n.get("filename", ""))
-                try:
-                    excerpt = fpath.read_text(encoding="utf-8")[:500].strip()
-                except OSError:
-                    excerpt = ""
-                if excerpt:
-                    title = n.get("title") or n.get("filename", "")
-                    note_lines.append(f"- [{title}] {excerpt}")
-            if len(note_lines) > 1:
-                return "\n".join(lines + ["", *note_lines])[:limit]
-    return "\n".join(lines)[:limit]
 
 
 def overview_text(ctx: dict, limit: int = 1600) -> str:

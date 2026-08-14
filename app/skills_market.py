@@ -9,8 +9,6 @@ import re
 import urllib.request
 from pathlib import Path
 
-from . import db  # noqa: F401 —— 仅确保 DATA_DIR 初始化习惯一致
-
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 SKILLS_DIR = DATA_DIR / "skills"
 

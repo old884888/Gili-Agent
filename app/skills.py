@@ -29,13 +29,6 @@ SKILLS: list[dict] = [
         "volatile": None,
     },
     {
-        "id": "learner",
-        "name": "学习模式（占位）",
-        "desc": "阶段三：笔记 / 大纲 / 知识库",
-        "prompt_fragment": "",
-        "future": True,
-    },
-    {
         "id": "search",
         "name": "联网搜索",
         "desc": "实时信息、新闻、事实查证（DuckDuckGo 免费 / Tavily 可选）",

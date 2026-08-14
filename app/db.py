@@ -6,8 +6,8 @@
 - memory_items   三层记忆（layer: core/working/longterm；kind: fact/summary）
 - request_logs   每次请求的 usage（命中率/成本/延迟/缓存失效标记）
 
-SQLite 是线程安全的（check_same_thread 默认关，连接按需开合），
-个人单用户场景够用。
+连接显式设 check_same_thread=False（异步单线程事件循环内使用，后台任务同线程），
+连接按需开合，个人单用户场景够用。
 """
 from __future__ import annotations
 
@@ -67,6 +67,9 @@ _SCHEMA: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id)",
     "CREATE INDEX IF NOT EXISTS idx_request_logs_ts ON request_logs(ts)",
     "CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_items(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_vg ON messages(version_group)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory_items(kind)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_conv ON memory_items(conversation_id)",
     """CREATE TABLE IF NOT EXISTS learning_projects (
         id TEXT PRIMARY KEY,
         subject TEXT,
@@ -230,9 +233,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def _conn(skip_init: bool = False) -> sqlite3.Connection:
     if not skip_init:
         init()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -240,7 +244,6 @@ def _query(sql: str, params: tuple = ()) -> list[dict]:
     conn = _conn()
     try:
         rows = conn.execute(sql, params).fetchall()
-        conn.commit()
         return [dict(r) for r in rows]
     finally:
         conn.close()
@@ -343,6 +346,7 @@ def delete_conversation(cid: str) -> None:
     _exec("DELETE FROM messages WHERE conversation_id=?", (cid,))
     _exec("DELETE FROM memory_items WHERE conversation_id=?", (cid,))
     _exec("DELETE FROM knowledge_chunks WHERE conversation_id=?", (cid,))
+    _exec("DELETE FROM request_logs WHERE conversation_id=?", (cid,))
     _exec("DELETE FROM conversations WHERE id=?", (cid,))
     if gid:
         remaining = _query("SELECT COUNT(*) AS n FROM conversations WHERE memory_group=?", (gid,))[0]["n"]
@@ -800,24 +804,41 @@ def get_memory_item(item_id: str) -> dict | None:
 
 
 def replace_knowledge_chunks(source_type: str, source_id: str, chunks: list[dict]) -> None:
-    """同源重建：先删后插（触发器自动同步 FTS）。"""
-    _exec("DELETE FROM knowledge_chunks WHERE source_type=? AND source_id=?", (source_type, source_id))
-    t = _now()
-    for i, c in enumerate(chunks):
-        cid = "k" + uuid.uuid4().hex[:8]
-        _exec(
-            """INSERT INTO knowledge_chunks
-               (id, source_type, source_id, project_id, conversation_id, title, heading,
-                content, tokens, ordinal, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                cid, source_type, source_id,
-                c.get("project_id"), c.get("conversation_id"),
-                c.get("title", ""), c.get("heading", ""),
-                c.get("content", ""), estimate_tokens(c.get("content", "")),
-                c.get("ordinal", i), t,
-            ),
+    """同源重建：先删后插（触发器自动同步 FTS）；单连接批量写入。"""
+    conn = _conn()
+    try:
+        conn.execute(
+            "DELETE FROM knowledge_chunks WHERE source_type=? AND source_id=?",
+            (source_type, source_id),
         )
+        t = _now()
+        rows = [
+            (
+                "k" + uuid.uuid4().hex[:8],
+                source_type,
+                source_id,
+                c.get("project_id"),
+                c.get("conversation_id"),
+                c.get("title", ""),
+                c.get("heading", ""),
+                c.get("content", ""),
+                estimate_tokens(c.get("content", "")),
+                c.get("ordinal", i),
+                t,
+            )
+            for i, c in enumerate(chunks)
+        ]
+        if rows:
+            conn.executemany(
+                """INSERT INTO knowledge_chunks
+                   (id, source_type, source_id, project_id, conversation_id, title, heading,
+                    content, tokens, ordinal, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def delete_knowledge_source(source_type: str, source_id: str) -> None:

@@ -9,8 +9,6 @@
 - 保留尾部 keep_tokens 原文作为工作窗口，其余交给 LLM 压成摘要
 - 摘要存 memory_items（kind=summary），重写 = 低频区变化 = 缓存失效（记账）
 - 原文保留（messages.summarized=1），绝不丢弃 —— 数据永远属于用户
-
-TODO(下一阶段): Mem0 式事实抽取（对话中自动抽偏好/事实进长期记忆）
 """
 from __future__ import annotations
 

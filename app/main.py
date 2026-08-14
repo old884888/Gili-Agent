@@ -57,7 +57,9 @@ def _sse(obj: dict) -> str:
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "mode": "prototype", "version": "0.15.0"}
+    settings = config.load()
+    mode = "real" if settings.get("api_key") else "prototype"
+    return {"status": "ok", "mode": mode, "version": "0.15.0"}
 
 
 @app.get("/api/config")
@@ -283,6 +285,7 @@ async def auto_title(cid: str):
 async def delete_conversation(cid: str):
     db.delete_conversation(cid)
     _prefix_fps.pop(cid, None)  # 清除前缀指纹，避免孤儿状态
+    learning_skill.forget(cid)  # 清除学习引导等会话级内存态
     return {"status": "ok"}
 
 
