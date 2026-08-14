@@ -41,6 +41,20 @@ WEB_SEARCH_TOOL = {
     },
 }
 
+# 网页抓取工具（借鉴 DSH web_fetch：把指定页面的正文喂给模型）
+WEB_FETCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_fetch",
+        "description": "抓取指定网页 URL 的正文内容。用户给出链接想了解详情、或搜索结果需要展开阅读时使用。",
+        "parameters": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "完整网页地址（http/https）"}},
+            "required": ["url"],
+        },
+    },
+}
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 UPLOADS_DIR = BASE_DIR / "data" / "uploads"
@@ -628,7 +642,7 @@ async def chat(req: ChatRequest):
     # 联网技能开启 → 附带工具定义（稳定信封，随请求发送）；按名字稳定排序（DSH 纪律）
     tools: list[dict] = []
     if any(s["id"] == "search" for s in skills.enabled_skills(settings)):
-        tools = sorted([WEB_SEARCH_TOOL], key=lambda t: t["function"]["name"])
+        tools = sorted([WEB_SEARCH_TOOL, WEB_FETCH_TOOL], key=lambda t: t["function"]["name"])
 
     log.info("[chat] 开始 cid=%s model=%s regen=%s search=%s", cid, req.params.model, bool(regen), bool(tools))
 
@@ -675,25 +689,36 @@ async def chat(req: ChatRequest):
                         ],
                     }]
                     for tc in r1["tool_calls"]:
+                        if tc["name"] == "web_fetch":
+                            try:
+                                url = (json.loads(tc["arguments"]) or {}).get("url", "")
+                            except json.JSONDecodeError:
+                                url = ""
+                            content = search.fetch_url(url)
+                            tool_msgs.append({
+                                "role": "tool", "tool_call_id": tc["id"], "content": content,
+                            })
+                            yield _sse({"event": "tool", "query": url, "results": 0})
+                            continue
                         try:
                             query = (json.loads(tc["arguments"]) or {}).get("query", "")
                         except json.JSONDecodeError:
                             query = ""
-                        results = search.search_web(
+                        result = search.search_web(
                             query,
-                            settings.get("search_provider", "duckduckgo"),
+                            settings.get("search_provider", "deepseek"),
                             settings.get("tavily_api_key", ""),
+                            settings.get("api_key", ""),
                         )
-                        content = (
-                            search.format_results(results, query)
-                            if results else f"搜索失败：无法获取「{query}」的结果，请告知用户稍后重试或换关键词。"
+                        content = search.format_results(result, query) or (
+                            f"搜索失败：无法获取「{query}」的结果，请告知用户稍后重试或换关键词。"
                         )
                         tool_msgs.append({
                             "role": "tool", "tool_call_id": tc["id"], "content": content,
                         })
                         yield _sse({
                             "event": "tool", "query": query,
-                            "results": len(results) if results else 0,
+                            "results": len(result.get("sources") or []),
                         })
                     msgs_for_llm = [*msgs_for_llm, *tool_msgs]
                 else:

@@ -20,7 +20,7 @@ DEFAULTS: dict = {
     "default_model": "deepseek-v4-flash",
     "soul": "你叫 Gili，是用户专属的 AI 伙伴。用中文回复，风格友好、直接、不啰嗦。",
     "skills": {},
-    "search_provider": "duckduckgo",
+    "search_provider": "deepseek",
     "tavily_api_key": "",
 }
 
