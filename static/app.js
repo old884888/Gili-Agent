@@ -1004,19 +1004,68 @@ $("#memusage-modal").onclick = (e) => {
   if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden");
 };
 
+let sendQueue = []; // {text, regenId, qid} —— 流式期间的后续消息队列（借鉴 DSH inbox：冻结入队，轮次边界领取）
+let _queueSeq = 0;
+const QUEUE_MAX = 20;
+
 async function sendMessage() {
   const text = $("#input").value.trim();
-  if (!text || streaming) return;
+  if (!text) return;
   $("#input").value = "";
   autoResizeInput();
+  if (streaming) {
+    if (sendQueue.length >= QUEUE_MAX) {
+      toast("发送队列已满（" + QUEUE_MAX + " 条），等当前回复完成后再发");
+      return;
+    }
+    const qid = "q" + ++_queueSeq;
+    appendMessage("user", text, false, { queued: true, qid });
+    sendQueue.push({ text, regenId: null, qid });
+    updateQueueBadge();
+    toast("已加入发送队列：当前回复完成后自动发送");
+    return;
+  }
   await sendChat(text, null);
+}
+
+// 轮次边界领取队列中的下一条（DSH 语义：当前轮结束后按序驱动）
+async function drainQueue() {
+  if (queueBusy || streaming) return;
+  const next = sendQueue.shift();
+  if (!next) {
+    updateQueueBadge();
+    return;
+  }
+  updateQueueBadge();
+  const placeholder = document.querySelector('.msg.user.queued[data-qid="' + next.qid + '"]');
+  if (placeholder) placeholder.remove(); // 占位气泡移除，sendChat 会重新追加正式气泡
+  queueBusy = true;
+  try {
+    if (next.regenId) await sendChat("", next.regenId);
+    else await sendChat(next.text, null);
+  } finally {
+    queueBusy = false;
+    drainQueue(); // 链式清空剩余队列
+  }
+}
+let queueBusy = false;
+
+function updateQueueBadge() {
+  const badge = $("#queue-badge");
+  if (!badge) return;
+  if (sendQueue.length) {
+    badge.classList.remove("hidden");
+    badge.textContent = "⏳ 队列 " + sendQueue.length + " 条（点击取消）";
+  } else {
+    badge.classList.add("hidden");
+  }
 }
 
 // 统一发送管道：正常对话 / 重新生成（regenId 指定目标 AI 消息）
 
 function setSendState() {
-  $("#btn-send").disabled = streaming;
-  $("#btn-send").textContent = streaming ? "生成中…" : "发送";
+  $("#btn-send").disabled = false;
+  $("#btn-send").textContent = streaming ? "加入队列" : "发送";
 }
 
 const input = $("#input");
@@ -1032,6 +1081,14 @@ input.addEventListener("keydown", (e) => {
   }
 });
 $("#btn-send").onclick = sendMessage;
+$("#queue-badge").onclick = () => {
+  if (!sendQueue.length) return;
+  if (!confirm("清空发送队列（" + sendQueue.length + " 条待发消息）？")) return;
+  document.querySelectorAll(".msg.user.queued").forEach((el) => el.remove());
+  sendQueue = [];
+  updateQueueBadge();
+  toast("队列已清空");
+};
 
 $("#btn-fav").onclick = async () => {
   if (!currentConv) return toast("先打开或新建一个对话");
@@ -2449,6 +2506,7 @@ async function sendChat(text, regenId) {
   setSendState();
   loadConversations();
   refreshMemoryBar();
+  drainQueue();
 }
 
 // ---------- 学习工作室：单窗口工作台 ----------
@@ -3154,10 +3212,11 @@ $("#btn-multi-all").onclick = () => {
 function appendMessage(role, text, typing = false, extra = {}) {
   const animate = extra.animate !== false;
   const el = document.createElement("div");
-  el.className = `msg ${role}${typing ? " typing" : ""}${animate ? " anim" : ""}`;
+  el.className = `msg ${role}${typing ? " typing" : ""}${animate ? " anim" : ""}${extra.queued ? " queued" : ""}`;
   el.dataset.msgId = extra.msgId || "";
   el.dataset.group = extra.group || "";
   el.dataset.vno = extra.versionNo || 1;
+  if (extra.queued) el.dataset.qid = extra.qid || "";
 
   if (role === "assistant") {
     el.innerHTML =
@@ -3271,6 +3330,12 @@ function appendMessage(role, text, typing = false, extra = {}) {
       copyText(content.dataset.raw || content.textContent);
     el.querySelector('[data-op="edit"]').onclick = () => startEdit(el, content);
     el.querySelector('[data-op="del"]').onclick = () => deleteMessageBubble(el);
+    if (extra.queued) {
+      const mark = document.createElement("span");
+      mark.className = "queue-mark";
+      mark.textContent = "⏳ 排队中";
+      el.appendChild(mark);
+    }
   }
 
   $("#messages").appendChild(el);

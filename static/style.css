@@ -880,6 +880,34 @@ select:focus { outline: none; border-color: var(--accent); }
 .opt-chip:hover:not(:disabled) { background: var(--accent); color: #fff; }
 .opt-chip:disabled { opacity: 0.45; cursor: default; }
 
+/* ---------- 发送队列 ---------- */
+.queue-badge {
+  font-size: calc(10.5px * var(--fs));
+  color: #93c5fd;
+  background: rgba(91, 140, 255, 0.12);
+  border: 1px solid rgba(91, 140, 255, 0.3);
+  border-radius: 20px;
+  padding: 2px 9px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.queue-badge:hover { background: rgba(91, 140, 255, 0.2); border-color: rgba(91, 140, 255, 0.5); }
+.msg.queued { opacity: 0.62; border: 1px dashed rgba(147, 197, 253, 0.4); }
+.queue-mark {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: calc(10px * var(--fs));
+  color: #93c5fd;
+  background: rgba(91, 140, 255, 0.1);
+  border-radius: 10px;
+  padding: 1px 8px;
+  animation: queue-breathe 1.6s ease-in-out infinite;
+}
+@keyframes queue-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 /* ---------- 联网检索卡 + 网页角标 ---------- */
 .search-card {
   margin-top: 8px;
