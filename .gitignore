@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.db
+.env
+data/
+exports/
+notes/
+# 无关项目与机器相关文件（2026-08 清理批次添加）
+deepseek-harness/
+.claude/
+.agents/
+.chrome-test-profile/
+.chrome-cdp-test-profile/
+*.lnk
+

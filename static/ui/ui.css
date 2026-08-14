@@ -1,0 +1,231 @@
+/* ============================================================================
+   Gili UI 动画引擎 —— 公共 CSS 工具库
+   用法：
+   - 玻璃面板：.ui-panel / .ui-panel-strong / .ui-glass
+   - 入场：.ui-reveal（配合 data-ui-reveal 由 ui.js 观测）
+   - 动效：.ui-spring .ui-bounce .ui-breathe .ui-pulse .ui-flow .ui-shimmer
+   - 对话框：现有 .help-box / .settings-box / #project-modal 统一接管
+   - 拖拽：.ui-draggable（配合 GiliUI.dampedDrag）
+   ============================================================================ */
+
+:root {
+  --ui-accent: #5b8cff;
+  --ui-accent-2: #8b6cff;
+  --ui-bg-deep: #0c101a;
+  --ui-bg-panel: rgba(21, 27, 43, 0.72);
+  --ui-stroke: rgba(255, 255, 255, 0.1);
+  --ui-shadow: 0 30px 80px rgba(2, 6, 16, 0.5);
+  --ui-spring: cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+/* ---------- 玻璃面板 ---------- */
+
+.ui-panel {
+  position: relative;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.025));
+  border: 1px solid var(--ui-stroke);
+  border-radius: 16px;
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  box-shadow: var(--ui-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+.ui-panel-strong {
+  background: linear-gradient(165deg, rgba(29, 36, 55, 0.92), rgba(14, 19, 31, 0.94));
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+  backdrop-filter: blur(26px) saturate(170%);
+}
+.ui-glass { background: rgba(255, 255, 255, 0.05); border: 1px solid var(--ui-stroke); }
+
+/* ---------- 关键帧 ---------- */
+
+@keyframes ui-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ui-slide-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ui-slide-down {
+  from { opacity: 0; transform: translateY(-14px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ui-slide-left {
+  from { opacity: 0; transform: translateX(-18px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ui-slide-right {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ui-spring-in {
+  0% { opacity: 0; transform: scale(0.92) translateY(18px); }
+  60% { opacity: 1; transform: scale(1.015) translateY(-2px); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes ui-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.018); }
+}
+@keyframes ui-pulse-ring {
+  from { transform: scale(0.55); opacity: 0.9; }
+  to { transform: scale(2); opacity: 0; }
+}
+@keyframes ui-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+@keyframes ui-flow {
+  from { background-position: 0% 50%; }
+  to { background-position: 200% 50%; }
+}
+@keyframes ui-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+@keyframes ui-bounce-soft {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-4px) scale(1.02); }
+  70% { transform: translateY(2px) scale(0.99); }
+}
+@keyframes ui-dialog-in {
+  0% { opacity: 0; transform: translateY(20px) scale(0.94); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* ---------- 工具类 ---------- */
+
+.ui-reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.45s ease, transform 0.45s var(--ui-spring);
+}
+.ui-reveal.is-visible { opacity: 1; transform: none; }
+
+.ui-spring { animation: ui-spring-in 0.42s var(--ui-spring) both; }
+.ui-bounce { animation: ui-bounce-soft 0.5s ease both; }
+.ui-breathe { animation: ui-breathe 2.8s ease-in-out infinite; }
+.ui-float { animation: ui-float 4.5s ease-in-out infinite; }
+.ui-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid var(--ui-accent);
+  animation: ui-pulse-ring 1.6s ease-out infinite;
+  pointer-events: none;
+}
+.ui-slide-up { animation: ui-slide-up 0.34s ease both; }
+.ui-slide-down { animation: ui-slide-down 0.3s ease both; }
+.ui-slide-left { animation: ui-slide-left 0.32s ease both; }
+.ui-slide-right { animation: ui-slide-right 0.32s ease both; }
+.ui-fade { animation: ui-fade-in 0.3s ease both; }
+
+.ui-flow {
+  background: linear-gradient(90deg, #5b8cff, #8b6cff, #34d399, #5b8cff);
+  background-size: 200% 100%;
+  animation: ui-flow 3s linear infinite;
+}
+.ui-shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.16), rgba(255,255,255,0.04));
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.8s linear infinite;
+}
+.ui-draggable { cursor: grab; touch-action: none; user-select: none; }
+.ui-draggable.dragging { cursor: grabbing; }
+
+.ui-stagger > * {
+  opacity: 0;
+  animation: ui-slide-up 0.4s ease forwards;
+  animation-delay: var(--ui-stagger-delay, 0ms);
+}
+
+/* ---------- 统一对话框（接管现有弹窗） ---------- */
+
+.help-box,
+#settings-modal .settings-box {
+  width: min(88vw, 1180px);
+  min-width: 720px;
+  max-width: 96vw;
+  max-height: 92vh;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(600px 240px at 85% -10%, rgba(91, 140, 255, 0.16), transparent 65%),
+    linear-gradient(165deg, rgba(28, 35, 54, 0.92), rgba(13, 18, 30, 0.95));
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+  backdrop-filter: blur(26px) saturate(170%);
+  box-shadow:
+    0 34px 90px rgba(2, 6, 16, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  animation: ui-dialog-in 0.3s var(--ui-spring) both;
+  overflow: hidden;
+}
+#project-modal .help-box {
+  width: min(88vw, 1180px) !important;
+  max-width: 96vw !important;
+  min-width: 720px;
+}
+.help-box::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 10%; right: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(139, 108, 255, 0.7), transparent);
+  pointer-events: none;
+}
+.help-head {
+  padding: 22px 28px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.help-title { font-size: calc(20px * var(--fs, 1)); font-weight: 750; letter-spacing: 0.01em; }
+.help-sub { font-size: calc(12px * var(--fs, 1)); margin-top: 4px; }
+.help-scroll { padding: 20px 28px 26px; }
+.help-close {
+  width: 32px; height: 32px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--ui-stroke);
+  color: var(--dim, #94a1b8);
+  cursor: pointer;
+  font-size: calc(14px * var(--fs, 1));
+  transition: color 0.15s ease, background 0.15s ease, transform 0.15s var(--ui-spring);
+}
+.help-close:hover {
+  color: #fff;
+  background: rgba(91, 140, 255, 0.18);
+  transform: rotate(90deg) scale(1.05);
+}
+
+.settings-col {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--ui-stroke);
+  border-radius: 16px;
+  padding: 16px 18px;
+}
+.settings-foot {
+  background: rgba(255, 255, 255, 0.02);
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* ---------- 移动端 / 小窗口降级 ---------- */
+
+@media (max-width: 760px) {
+  .help-box,
+  #settings-modal .settings-box,
+  #project-modal .help-box {
+    width: 94vw !important;
+    min-width: 0 !important;
+  }
+  .settings-grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- 无障碍：尊重系统减少动态效果 ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001s !important;
+  }
+}

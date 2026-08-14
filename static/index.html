@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gili Agent · 原型</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="ui/ui.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- 左侧：会话列表 -->
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">G</span> Gili<span class="dim">Agent</span></div>
+    <div class="sidebar-actions">
+      <button id="btn-new-chat" class="btn primary" style="flex:1" data-ui-pop>＋ 新对话</button>
+      <button id="btn-multi-del" class="btn" title="多选删除">🗑 多选</button>
+    </div>
+    <div id="multi-bar" class="multi-bar hidden">
+      <span id="multi-count">已选 0 项</span>
+      <button id="btn-multi-all" class="btn ghost" title="全选 / 全不选">☑ 全选</button>
+      <button id="btn-multi-more" class="btn ghost" title="更多操作">⋯</button>
+      <div id="multi-menu" class="multi-menu hidden">
+        <button id="btn-multi-link" class="menu-item" title="把选中的 2+ 个对话连成共享记忆组">🔗 连接记忆</button>
+        <button id="btn-multi-confirm" class="menu-item danger">🗑 删除</button>
+        <button id="btn-multi-cancel" class="menu-item">✕ 退出多选</button>
+      </div>
+    </div>
+    <div id="side-mode" class="side-mode hidden">
+      <button class="side-tab active" data-mode="conv">💬 对话</button>
+      <button class="side-tab" data-mode="learn">📚 学习资料</button>
+    </div>
+    <div id="conv-list" class="conv-list"></div>
+    <div id="learning-panel" class="learning-panel hidden"></div>
+    <button id="btn-settings" class="btn ghost block">⚙ 设置</button>
+    <div class="sidebar-foot">
+      <span id="status-dot" class="dot"></span> <span id="status-text">连接中…</span>
+    </div>
+  </aside>
+  <div class="col-divider" data-side="left" title="拖动调整宽度"></div>
+
+  <!-- 中间：聊天区 -->
+  <main class="chat">
+    <header class="chat-header">
+      <div id="chat-title">未命名对话</div>
+      <div class="chat-header-right">
+        <button id="btn-lp-badge" class="lp-badge hidden" title="查看学习项目大纲与进度">📚 学习项目</button>
+        <button id="btn-refs" class="refs-btn hidden" title="查看当前回答引用的来源">🔗 来源</button>
+        <button id="btn-learning" class="btn ghost" title="把当前对话变成学习专用，AI 引导创建大纲">🎓 学习模式</button>
+        <button id="btn-learning-docs" class="btn ghost" title="学习项目文档（大纲/进度/笔记/疑问）">📖 学习文档</button>
+        <button id="btn-fav" class="btn ghost" title="收藏对话">☆ 收藏</button>
+        <button id="btn-export" class="btn ghost" title="导出为 markdown">⬇ 导出</button>
+        <button id="btn-clear" class="btn ghost" title="清空当前对话">清空</button>
+      </div>
+    </header>
+    <div id="messages" class="messages">
+      <div id="chat-empty" class="chat-empty">
+        <div>和 Gili 聊点什么吧</div>
+        <div class="sub">消息会自动保存在本地 · 支持 Markdown 表格与 Mermaid 流程图</div>
+      </div>
+    </div>
+    <!-- 输入工具栏：文件上传 + 记忆容量进度条 -->
+    <div class="composer-toolbar">
+      <button id="btn-attach" class="btn small" title="上传文件（txt/md/csv/json/PDF）">📎 文件</button>
+      <div id="attach-list" class="attach-list"></div>
+      <div id="learn-tools" class="learn-tools hidden">
+        <button class="learn-chip" data-cmd="开始下一章">▶ 开始下一章</button>
+        <button class="learn-chip" data-cmd="本章学完">✅ 本章学完</button>
+        <button class="learn-chip" data-cmd="记一下：">📝 记笔记</button>
+      </div>
+      <div class="spacer"></div>
+      <button id="btn-mem-usage" class="mem-bar-btn" title="查看记忆容量详情">
+        <div class="mem-bar">
+          <div class="mem-fill mem-stable" id="mem-stable"></div>
+          <div class="mem-fill mem-lowfreq" id="mem-lowfreq"></div>
+          <div class="mem-fill mem-volatile" id="mem-volatile"></div>
+        </div>
+        <span class="mem-bar-label" id="mem-label">记忆</span>
+      </button>
+      <input type="file" id="in-attach" hidden multiple>
+    </div>
+    <footer class="composer">
+      <textarea id="input" rows="1" placeholder="和 Gili 聊聊…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="btn-send" class="btn primary" data-ui-pop>发送</button>
+    </footer>
+  </main>
+  <div class="col-divider" data-side="right" title="拖动调整宽度"></div>
+
+  <!-- 右侧：参数 / 记忆 / 数据 -->
+  <aside class="panel">
+    <nav class="tabs">
+      <button class="tab active" data-tab="params">参数</button>
+      <button class="tab" data-tab="memory">记忆</button>
+      <button class="tab" data-tab="data">数据</button>
+      <button class="tab" data-tab="skills">技能</button>
+      <button id="btn-param-help" class="help-btn" title="参数说明书">?</button>
+    </nav>
+
+    <!-- 参数面板 -->
+    <section id="tab-params" class="tab-body active">
+      <h3>模型</h3>
+      <select id="sel-model">
+        <option value="deepseek-v4-flash">DeepSeek V4 Flash（轻快 · 1M）</option>
+        <option value="deepseek-v4-pro">DeepSeek V4 Pro（旗舰 · 1M）</option>
+      </select>
+
+      <h3>思考 <span class="hint">V4 独立旋钮，思考时采样参数不生效</span></h3>
+      <div class="field"><label>思考模式</label><input type="checkbox" id="in-thinking" class="chk" checked></div>
+      <div class="field"><label>思考强度</label>
+        <select id="in-effort" style="flex:1.4">
+          <option value="low">低</option>
+          <option value="high" selected>高（默认）</option>
+          <option value="max">最大（更慢更贵，适合复杂任务）</option>
+        </select>
+      </div>
+
+      <h3>采样参数</h3>
+      <div class="field"><label>temperature</label><input type="range" id="in-temperature" min="0" max="2" step="0.1" value="1.0"><span class="val" id="val-temperature">1.0</span></div>
+      <div class="field"><label>top_p</label><input type="range" id="in-top_p" min="0" max="1" step="0.05" value="1.0"><span class="val" id="val-top_p">1.0</span></div>
+      <div class="field"><label>max_tokens</label><input type="number" id="in-max_tokens" min="1" max="131072" step="128" value="4096"></div>
+      <div class="field"><label>presence_penalty</label><input type="range" id="in-presence_penalty" min="-2" max="2" step="0.1" value="0"><span class="val" id="val-presence_penalty">0.0</span></div>
+      <div class="field"><label>frequency_penalty</label><input type="range" id="in-frequency_penalty" min="-2" max="2" step="0.1" value="0"><span class="val" id="val-frequency_penalty">0.0</span></div>
+      <div class="field"><label>流式输出</label><input type="checkbox" id="in-stream" class="chk" checked></div>
+
+      <h3>记忆参数 <span class="hint">（命中率核心旋钮）</span></h3>
+      <div class="field"><label>上下文档位</label>
+        <select id="in-context-preset" style="flex:1.4">
+          <option value="">自定义</option>
+          <option value="light">轻量 · 8k 历史（省）</option>
+          <option value="standard" selected>标准 · 12k 历史（默认）</option>
+          <option value="deep">深度 · 32k 历史</option>
+          <option value="extreme">极限 · 100k 历史</option>
+        </select>
+      </div>
+      <div class="field"><label>历史 token 预算</label><input type="number" id="in-history_budget" min="500" max="131072" step="500" value="12000"></div>
+      <div class="field"><label>摘要重写阈值</label><input type="number" id="in-summary_threshold" min="1000" max="131072" step="1000" value="16000"></div>
+      <div class="field"><label>记忆检索</label><input type="checkbox" id="in-recall" class="chk" checked title="关闭后本会话只使用当前对话内容"></div>
+      <h3>知识检索 <span class="hint">学习文档 / 记忆</span></h3>
+      <div class="field"><label>知识检索</label><input type="checkbox" id="in-kb-recall" class="chk" checked title="关闭后不检索学习文档和记忆"></div>
+      <div class="field"><label>智能重排（更准更慢）</label><input type="checkbox" id="in-rerank" class="chk"></div>
+
+      <div class="params-status" id="params-status" data-state="dirty">
+        <span class="dot"></span><span id="params-status-text">未保存</span>
+      </div>
+      <div class="btn-row">
+        <button id="btn-save-cfg" class="btn">保存配置</button>
+        <button id="btn-edit-cfg" class="btn hidden">编辑</button>
+        <button id="btn-reset-cfg" class="btn ghost">重置</button>
+      </div>
+    </section>
+
+    <!-- 记忆面板 -->
+    <section id="tab-memory" class="tab-body">
+      <div class="mem-search">
+        <input type="text" id="in-mem-search" placeholder="搜索记忆…（回车）">
+        <button id="btn-mem-search" class="btn small">🔍</button>
+      </div>
+      <div class="mem-layer">
+        <div class="mem-layer-head">
+          <span class="mem-layer-icon">🧠</span>
+          <div class="mem-layer-txt"><div class="mem-layer-name">核心记忆</div><div class="mem-layer-sub">人格级 · 常驻稳定区</div></div>
+          <span class="mem-layer-count" data-count="core">0 条</span>
+        </div>
+        <div class="mem-items" data-layer="core"></div>
+      </div>
+      <div class="mem-layer">
+        <div class="mem-layer-head">
+          <span class="mem-layer-icon">🗂️</span>
+          <div class="mem-layer-txt"><div class="mem-layer-name">工作记忆</div><div class="mem-layer-sub">近期对话 · 预算内</div></div>
+          <span class="mem-layer-count" data-count="working">0 条</span>
+        </div>
+        <div class="mem-items" data-layer="working"></div>
+      </div>
+      <div class="mem-layer">
+        <div class="mem-layer-head">
+          <span class="mem-layer-icon">📚</span>
+          <div class="mem-layer-txt"><div class="mem-layer-name">长期记忆</div><div class="mem-layer-sub">摘要 + 事实 · 低频重写</div></div>
+          <span class="mem-layer-count" data-count="longterm">0 条</span>
+        </div>
+        <div class="mem-items" data-layer="longterm"></div>
+      </div>
+      <button id="btn-add-mem" class="btn block">＋ 添加记忆</button>
+      <div id="mem-add-box" class="mem-add hidden">
+        <div class="mem-add-row">
+          <select id="sel-mem-layer">
+            <option value="longterm">长期记忆</option>
+            <option value="core">核心记忆</option>
+          </select>
+          <select id="sel-mem-importance">
+            <option value="2">重要性 · 一般</option>
+            <option value="3">重要性 · 高（常驻）</option>
+            <option value="1">重要性 · 细节</option>
+          </select>
+        </div>
+        <textarea id="in-mem-content" rows="2" placeholder="写一条想记住的内容…"></textarea>
+        <div class="mem-add-actions">
+          <button id="btn-save-mem" class="btn primary">保存</button>
+          <button id="btn-cancel-mem" class="btn ghost">取消</button>
+        </div>
+      </div>
+      <button id="btn-summarize" class="btn ghost block">🧹 压缩摘要（低频重写）</button>
+    </section>
+
+    <!-- 数据面板（跟随当前对话） -->
+    <section id="tab-data" class="tab-body">
+      <h3>命中率与成本 <span id="data-source" class="badge">…</span></h3>
+      <div class="hint" id="stat-invalid" style="margin:2px 0 8px"></div>
+      <div class="cards">
+        <div class="card"><div class="card-num" id="stat-hitrate">--</div><div class="card-label">缓存命中率</div></div>
+        <div class="card"><div class="card-num" id="stat-tokens">--</div><div class="card-label">累计输入 tokens</div></div>
+        <div class="card"><div class="card-num" id="stat-cost">--</div><div class="card-label">估算成本 (¥)</div></div>
+        <div class="card"><div class="card-num" id="stat-latency">--</div><div class="card-label">平均延迟 (ms)</div></div>
+      </div>
+      <canvas id="chart-hitrate" height="180"></canvas>
+      <h3>请求日志 <span class="hint">阶段二接入真实 usage</span></h3>
+      <table class="log-table">
+        <thead><tr><th>时间</th><th>prompt</th><th>命中</th><th>未命中</th><th>命中率</th><th>推理</th><th>延迟</th><th>失效</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </section>
+
+    <!-- 技能面板 -->
+    <section id="tab-skills" class="tab-body">
+      <h3>技能开关 <span class="hint">切换会改变稳定区（清缓存），建议对话间隙操作</span></h3>
+      <div id="skill-list"></div>
+      <button id="btn-more-skills" class="btn block">🌐 更多技能</button>
+    </section>
+  </aside>
+
+</div>
+<!-- 参数说明书弹窗 -->
+<div id="help-modal" class="modal hidden">
+  <div class="modal-box help-box">
+    <div class="help-head">
+      <div>
+        <div class="help-title">参数说明书</div>
+        <div class="help-sub">每个旋钮是什么 · 怎么调 · 调了会怎样</div>
+      </div>
+      <button id="btn-close-help" class="help-close" title="关闭">✕</button>
+    </div>
+    <div class="help-scroll">
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">🧠</span>思考区<span class="help-note">思考开启时，下方采样参数不生效（DeepSeek 行为）</span></div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">思考模式</span><span class="help-val" id="help-thinking">开</span></div>
+            <p>开关"先想后答"。开启时回复上方出现 💭 思考链（已保存，点开可看推理过程）。</p>
+            <div class="help-example">问"为什么/分析"类开着；查事实、闲聊可关掉，速度翻倍</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">思考强度</span><span class="help-val" id="help-effort">high</span></div>
+            <p>推理深度。low 实际等同 high；max 更深，但多耗 50-200% 推理 token、慢 30-100%。</p>
+            <div class="help-example">写诗、日常用 high；数学证明、系统架构设计用 max</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">🎛️</span>采样区<span class="help-note">控制"回答的风格"，不影响记忆</span></div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">temperature 温度</span><span class="help-val" id="help-temperature">1.0</span></div>
+            <p>随机性：0 = 最确定保守（事实/代码），越高越有创意发散（写作）。</p>
+            <div class="help-example">查资料 0.3；写诗 1.3；头脑风暴 1.5</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">top_p</span><span class="help-val" id="help-top_p">1.0</span></div>
+            <p>核采样，效果类似温度。一般保持 1.0，和温度二选一调即可。</p>
+            <div class="help-example">想收着点写 → 0.9；想放飞 → 保持 1.0 不动</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">max_tokens</span><span class="help-val" id="help-max_tokens">4096</span></div>
+            <p>单次输出上限（含思考链）。太小会被截断——会弹 ⚠ 提示，不是 bug。</p>
+            <div class="help-example">短回答 1024；长文/报告 8192；思考模式建议 4096 起步</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">presence_penalty</span><span class="help-val" id="help-presence">0.0</span></div>
+            <p>话题新鲜度惩罚（-2~2）：越大越倾向聊新话题、不重复说过的话。</p>
+            <div class="help-example">觉得它总绕回老话题 → 拉到 0.6</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">frequency_penalty</span><span class="help-val" id="help-frequency">0.0</span></div>
+            <p>用词重复惩罚（-2~2）：越大用词越多样，避免车轱辘话。</p>
+            <div class="help-example">写作时嫌它词穷 → 0.5</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">流式输出</span><span class="help-val" id="help-stream">开</span></div>
+            <p>逐字显示（推荐，能看到思考进度）；关闭则一次性返回整段。</p>
+            <div class="help-example">默认保持开启即可</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">🗂️</span>记忆区<span class="help-note">这些是"上下文容量"的管理旋钮，也是命中率的核心</span></div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">上下文档位</span><span class="help-val" id="help-preset">标准</span></div>
+            <p>一键预设：轻量 8k / 标准 12k / 深度 32k / 极限 100k（历史原文预算），阈值自动配套。</p>
+            <div class="help-example">日常聊天标准档；长文档讨论深度档；拖滑块会变"自定义"</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">历史 token 预算</span><span class="help-val" id="help-budget">12,000</span></div>
+            <p>每轮把最近多少 token 的对话原文放进上下文（水池容量）。超出部分先裁剪、后被摘要吸收，不会丢。</p>
+            <div class="help-example">12k ≈ 一两万字对话；想让它逐字记住更久 → 调大</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">摘要重写阈值</span><span class="help-val" id="help-threshold">16,000</span></div>
+            <p>未摘录对话累积超过多少 → 触发一次压缩：旧内容交给 LLM 压成要点进长期记忆（会清一次缓存，⚠ 正常）。</p>
+            <div class="help-example">16k ≈ 每聊 1.5 万字自动整理一次；想整理更频繁 → 调低</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head"><span class="help-name">记忆检索</span><span class="help-val" id="help-recall">开</span></div>
+            <p>是否把已抽取的事实（📌 长期记忆）按重要度注入对话。关闭后 Gili 只靠本会话内容回答。</p>
+            <div class="help-example">想让它记得你的偏好 → 保持开；要极简上下文 → 关</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-foot">
+        💡 缓存小知识：没有"缓存开关"——DeepSeek 的缓存自动生效。你能做的只有保持提示词前缀稳定：
+        稳定区（人设+技能）和低频区（摘要+记忆）不变，缓存就一直命中；任何变动都会打 ⚠ 并付一次全价。
+        命中率、失效事件、成本都在「数据」面板实时可见。
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 记忆容量详情弹窗（手机存储条风） -->
+<div id="memusage-modal" class="modal hidden">
+  <div class="modal-box help-box">
+    <div class="help-head">
+      <div>
+        <div class="help-title">记忆容量</div>
+        <div class="help-sub">当前对话的上下文使用情况</div>
+      </div>
+      <button id="btn-close-memusage" class="help-close" title="关闭">✕</button>
+    </div>
+    <div class="help-scroll">
+      <div class="usage-big-bar">
+        <div class="mem-fill mem-stable" id="mu-stable"></div>
+        <div class="mem-fill mem-lowfreq" id="mu-lowfreq"></div>
+        <div class="mem-fill mem-volatile" id="mu-volatile"></div>
+      </div>
+      <div class="usage-legend">
+        <span><i class="dot-c stable"></i>稳定区 <b id="mu-stable-t">0</b></span>
+        <span><i class="dot-c lowfreq"></i>低频区 <b id="mu-lowfreq-t">0</b></span>
+        <span><i class="dot-c volatile"></i>波动区 <b id="mu-volatile-t">0</b></span>
+        <span>已用 <b id="mu-used">0</b> / 预算 <b id="mu-budget">0</b></span>
+      </div>
+      <div class="usage-grid">
+        <div class="usage-card"><div class="u-num" id="mu-soul">0</div><div class="u-label">Soul（人设）tokens</div></div>
+        <div class="usage-card"><div class="u-num" id="mu-skills">0</div><div class="u-label">技能片段数</div></div>
+        <div class="usage-card"><div class="u-num" id="mu-summary">0</div><div class="u-label">摘要 tokens</div></div>
+        <div class="usage-card"><div class="u-num" id="mu-facts">0</div><div class="u-label">记忆条目（常驻+检索）</div></div>
+        <div class="usage-card"><div class="u-num" id="mu-hmsgs">0</div><div class="u-label">历史消息</div></div>
+        <div class="usage-card"><div class="u-num" id="mu-htok">0</div><div class="u-label">历史 tokens</div></div>
+        <div class="usage-card"><div class="u-num" id="mu-msgs">0</div><div class="u-label">全部消息数</div></div>
+        <div class="usage-card"><div class="u-num" id="mu-items">0</div><div class="u-label">记忆条目总数</div></div>
+        <div class="usage-card"><div class="u-num" id="mu-db">0</div><div class="u-label">数据库大小 (KB)</div></div>
+      </div>
+      <div class="help-foot">💡 蓝色 = 人设+技能（稳定区，缓存永远保住）｜ 绿色 = 摘要+记忆（低频区，重写才变）｜ 橙色 = 近期对话（波动区，每轮增长）。超预算的部分先裁剪、再被摘要吸收，不会丢。</div>
+    </div>
+  </div>
+</div>
+
+<!-- 设置弹窗 -->
+<div id="settings-modal" class="modal hidden">
+  <div class="modal-box settings-box">
+    <div class="help-head">
+      <div>
+        <div class="help-title">设置</div>
+        <div class="help-sub">DeepSeek 连接 · 人设 · 联网搜索</div>
+      </div>
+      <button id="btn-close-settings" class="help-close" title="关闭">✕</button>
+    </div>
+    <div class="settings-grid">
+      <section class="settings-col">
+        <h3>DeepSeek 连接</h3>
+        <div class="field"><label>API Key</label><input type="password" id="in-key" placeholder="sk-..."></div>
+        <div id="key-card" class="key-card hidden">
+          <span class="key-card-icon">🔑</span>
+          <span class="key-mask"></span>
+          <div class="key-card-actions">
+            <button id="btn-apply-key" class="btn small">应用</button>
+            <button id="btn-clear-key" class="btn small ghost">清除</button>
+          </div>
+        </div>
+        <div class="field"><label>Base URL</label><input type="text" id="in-baseurl" placeholder="https://api.deepseek.com"></div>
+        <div class="field"><label>默认模型</label>
+          <select id="in-defmodel">
+            <option value="deepseek-v4-flash">deepseek-v4-flash（轻快）</option>
+            <option value="deepseek-v4-pro">deepseek-v4-pro（旗舰）</option>
+          </select>
+        </div>
+        <button id="btn-test" class="btn">测试连接</button>
+        <div id="test-result" class="test-result"></div>
+      </section>
+      <section class="settings-col">
+        <h3>人设（Soul）</h3>
+        <p class="settings-note">核心记忆 · 稳定区，高频设定写这里</p>
+        <textarea id="in-soul" rows="13" placeholder="你叫 Gili，是用户专属的 AI 伙伴…"></textarea>
+      </section>
+      <section class="settings-col">
+        <h3>联网搜索</h3>
+        <p class="settings-note">还需在「技能」面板开启</p>
+        <div class="field"><label>搜索源</label>
+          <select id="in-search-provider">
+            <option value="duckduckgo">DuckDuckGo（免费免 key）</option>
+            <option value="tavily">Tavily（需 key，中文更好）</option>
+          </select>
+        </div>
+        <div class="field"><label>Tavily Key</label><input type="password" id="in-tavily-key" placeholder="tvly-..."></div>
+        <h3>界面显示</h3>
+        <p class="settings-note">字号即时生效，偏好保存在本机</p>
+        <div class="field"><label>字号大小</label>
+          <select id="in-font-size">
+            <option value="0.9">较小（90%）</option>
+            <option value="1" selected>标准（100%）</option>
+            <option value="1.1">较大（110%）</option>
+            <option value="1.2">大（120%）</option>
+            <option value="1.35">特大（135%）</option>
+          </select>
+        </div>
+      </section>
+    </div>
+    <div class="settings-foot">
+      <button id="btn-save-settings" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+<!-- 学习中心 -->
+<div id="learning-center-modal" class="modal hidden">
+  <div class="modal-box help-box" style="width:min(72vw,1200px);min-width:500px">
+    <div class="help-head"><div><div class="help-title">学习中心</div><div class="help-sub">管理学习项目</div></div><button class="help-close" id="btn-close-center">✕</button></div>
+    <div class="help-scroll">
+      <button id="btn-new-project" class="btn primary block">＋ 新建学习项目</button>
+      <div id="learning-cards" class="learning-cards"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 项目详情弹窗 -->
+<div id="project-modal" class="modal hidden">
+  <div class="modal-box help-box" style="max-width:700px">
+    <div class="help-head"><div><div class="help-title" id="proj-title">项目</div><div class="help-sub" id="proj-anchor"></div></div><button class="help-close" id="btn-close-project">✕</button></div>
+    <div class="help-scroll">
+      <div class="proj-toolbar">
+        <div id="proj-tabs"></div>
+        <button id="proj-md-toggle" class="btn small" title="源码/渲染切换">源码</button>
+      </div>
+      <div id="proj-content" class="proj-content"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 更多技能市场 -->
+<div id="skills-market-modal" class="modal hidden">
+  <div class="modal-box help-box">
+    <div class="help-head">
+      <div>
+        <div class="help-title">更多技能</div>
+        <div class="help-sub">内置技能直接安装；GitHub 技能通过镜像下载 SKILL.md</div>
+      </div>
+      <button id="btn-close-market" class="help-close" title="关闭">✕</button>
+    </div>
+    <div class="help-scroll">
+      <div class="market-tools">
+        <div class="studio-search" id="market-search">
+          <span>🔎</span>
+          <input type="text" id="in-market-search" placeholder="搜索技能 / 仓库 / 功能">
+          <button class="clear" id="btn-market-clear" title="清空">✕</button>
+        </div>
+      </div>
+      <div id="market-grid" class="market-grid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 引用来源抽屉 -->
+<div id="refs-drawer" class="refs-drawer hidden">
+  <div class="refs-head">
+    <div>
+      <div class="refs-title">引用来源</div>
+      <div class="refs-sub" id="refs-count"></div>
+    </div>
+    <button id="btn-close-refs" class="help-close" title="关闭">✕</button>
+  </div>
+  <div id="refs-list" class="refs-list"></div>
+</div>
+
+<!-- 引用 popover -->
+<div id="cite-popover" class="cite-popover hidden"></div>
+
+<div id="toast" class="toast"></div>
+<script src="ui/ui.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
