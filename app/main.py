@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import time
@@ -22,7 +23,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, knowledge, learning_skill, llm, memory, metrics, prompt_builder, search, skills, skills_market
+from . import config, db, knowledge, learning_skill, llm, log as logmod, memory, metrics, prompt_builder, search, skills, skills_market
 from .schemas import ChatParams, ChatRequest, MemoryItem
 
 # 联网搜索工具定义（进稳定区：开启技能时随请求发送，顺序固定）
@@ -42,6 +43,7 @@ WEB_SEARCH_TOOL = {
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 UPLOADS_DIR = BASE_DIR / "data" / "uploads"
+log = logging.getLogger(__name__)
 _UPLOAD_NAME_RE = re.compile(r"^f[0-9a-f]{8}\.(txt|json)$")
 
 
@@ -62,14 +64,17 @@ def _cleanup_uploads(max_age_days: int = 7) -> None:
                 except OSError:
                     pass
         if removed:
-            print(f"[uploads] 启动清理 {removed} 个过期/孤儿附件")
+            log.info("[uploads] 启动清理 %d 个过期/孤儿附件", removed)
     except OSError:
         pass
 
 
-app = FastAPI(title="Gili Agent", version="0.15.0")
+app = FastAPI(title="Gili Agent", version="0.15.2")
+logmod.setup_logging()
 db.init()
 _cleanup_uploads()
+_s = config.load()
+log.info("Gili Agent 启动 v0.15.2 mode=%s", "real" if _s.get("api_key") else "prototype")
 
 # 会话级前缀指纹：指纹变化 = 缓存失效（该请求的日志打标）
 _prefix_fps: dict[str, str] = {}
@@ -85,7 +90,7 @@ def _sse(obj: dict) -> str:
 async def health():
     settings = config.load()
     mode = "real" if settings.get("api_key") else "prototype"
-    return {"status": "ok", "mode": mode, "version": "0.15.0"}
+    return {"status": "ok", "mode": mode, "version": "0.15.2"}
 
 
 @app.get("/api/config")
@@ -368,7 +373,7 @@ def _extract_text(suffix: str, data: bytes) -> str:
         if suffix in _TEXT_SUFFIXES:
             return data.decode("utf-8", errors="replace")
     except Exception as e:  # noqa: BLE001
-        print(f"[upload] {suffix}: {type(e).__name__}: {e}")
+        log.warning("[upload] %s 提取失败: %s: %s", suffix, type(e).__name__, e)
     return ""
 
 
@@ -604,6 +609,8 @@ async def chat(req: ChatRequest):
     if any(s["id"] == "search" for s in skills.enabled_skills(settings)):
         tools = [WEB_SEARCH_TOOL]
 
+    log.info("[chat] 开始 cid=%s model=%s regen=%s search=%s", cid, req.params.model, bool(regen), bool(tools))
+
     def _chunks(s: str, n: int = 6):
         for i in range(0, len(s), n):
             yield s[i : i + n]
@@ -682,7 +689,7 @@ async def chat(req: ChatRequest):
                         reasoning_text += evt["text"]
                     await asyncio.sleep(0)
         except Exception as e:  # noqa: BLE001 —— 网络/API 失败：保留部分回答并通知前端
-            print(f"[chat-error] {type(e).__name__}: {e}")
+            log.exception("[chat-error] %s: %s", type(e).__name__, e)
             error_detail = f"请求失败：{e}"
 
         usage = provider.last_usage or {}
@@ -711,6 +718,13 @@ async def chat(req: ChatRequest):
             })
             return
 
+        log.info(
+            "[chat] 完成 cid=%s 用时%dms hit=%s miss=%s out=%s",
+            cid, latency,
+            usage.get("prompt_cache_hit_tokens", 0),
+            usage.get("prompt_cache_miss_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
         yield _sse({
             "event": "done",
             "usage": usage,
@@ -736,7 +750,7 @@ async def chat(req: ChatRequest):
                     )
                     yield _sse({"event": "proposal", "status": "ready"})
             except Exception as e:  # noqa: BLE001
-                print(f"[learning-propose] {type(e).__name__}: {e}")
+                log.exception("[learning-propose] %s: %s", type(e).__name__, e)
         # AI 起标题：仅新对话首次（标题仍为默认值时）
         if provider.name == "deepseek" and db.get_conversation(cid)["title"] == "新对话":
             async def _safe_title():
@@ -747,7 +761,7 @@ async def chat(req: ChatRequest):
                     if title:
                         db.rename_conversation(cid, title)
                 except Exception as e:  # noqa: BLE001
-                    print(f"[auto-title] {type(e).__name__}: {e}")
+                    log.exception("[auto-title] %s: %s", type(e).__name__, e)
 
             asyncio.create_task(_safe_title())
         # 海马体：每 EXTRACT_INTERVAL 轮批量抽取事实（批量写 = 低频区少变）
@@ -756,9 +770,9 @@ async def chat(req: ChatRequest):
                 try:
                     r = await memory.extract_facts(cid, provider)
                     if any(r.values()):
-                        print(f"[extract-facts] {cid} +{r['added']} ~{r['updated']} -{r['deleted']}")
+                        log.info("[extract-facts] %s +%s ~%s -%s", cid, r["added"], r["updated"], r["deleted"])
                 except Exception as e:  # noqa: BLE001
-                    print(f"[extract-facts] {type(e).__name__}: {e}")
+                    log.exception("[extract-facts] %s: %s", type(e).__name__, e)
 
             asyncio.create_task(_safe_extract())
         # 记忆摘要低频重写：超阈值 → 后台压缩（下次请求低频区即更新）。
@@ -771,7 +785,7 @@ async def chat(req: ChatRequest):
                 try:
                     await memory.summarize_conversation(cid, provider, keep_window)
                 except Exception as e:  # noqa: BLE001 —— 后台任务异常不打断主流程
-                    print(f"[auto-summarize] {type(e).__name__}: {e}")
+                    log.exception("[auto-summarize] %s: %s", type(e).__name__, e)
 
             asyncio.create_task(_safe_summarize())
 
@@ -823,6 +837,11 @@ async def edit_memory(item_id: str, body: dict):
         raise HTTPException(status_code=404, detail="记忆不存在")
     content = body.get("content")
     importance = body.get("importance")
+    if importance is not None:
+        try:
+            importance = int(importance)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="importance 必须是整数")
     if content is None and importance is None:
         raise HTTPException(status_code=400, detail="没有要修改的内容")
     db.update_memory_item(item_id, content=content, importance=importance)

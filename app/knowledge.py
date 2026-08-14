@@ -11,11 +11,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
 from pathlib import Path
 
 from . import db
+
+log = logging.getLogger(__name__)
 from .schemas import ChatParams
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -393,6 +396,6 @@ def source_meta(sources: list[dict]) -> list[dict]:
 if __name__ == "__main__":
     if "--reindex-all" in sys.argv:
         result = reindex_all()
-        print(f"reindexed projects={result['projects']} memory={result['memory']}")
+        log.info("reindexed projects=%s memory=%s", result["projects"], result["memory"])
     else:
         print("usage: python -m app.knowledge --reindex-all")

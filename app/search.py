@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.request
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 def search_web(
@@ -18,7 +21,7 @@ def search_web(
             return _tavily(query, tavily_key)
         return _duckduckgo(query)
     except Exception as e:  # noqa: BLE001
-        print(f"[search] {provider}: {type(e).__name__}: {e}")
+        log.warning("[search] %s: %s: %s", provider, type(e).__name__, e)
         return None
 
 
