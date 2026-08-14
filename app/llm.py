@@ -23,6 +23,22 @@ from typing import AsyncIterator, Optional
 from .schemas import ChatParams
 
 
+# 模块级共享客户端：按 (api_key, base_url) 复用同一个 AsyncOpenAI（httpx 连接池并发安全），
+# 避免每请求新建连接池且从不关闭造成的 socket 累积；设置变更时换新。
+_shared_clients: dict = {}
+
+
+def _get_client(api_key: str, base_url: str):
+    key = (api_key, base_url)
+    client = _shared_clients.get(key)
+    if client is None:
+        from openai import AsyncOpenAI  # 延迟导入：没 key 时不强制装包
+
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        _shared_clients[key] = client
+    return client
+
+
 class LLMProvider(ABC):
     """所有模型接入的统一接口。现在只有 DeepSeek，未来可扩展。"""
 
@@ -74,9 +90,7 @@ class DeepSeekProvider(LLMProvider):
     name = "deepseek"
 
     def __init__(self, api_key: str, base_url: str = "https://api.deepseek.com"):
-        from openai import AsyncOpenAI  # 延迟导入：没 key 时不强制装包
-
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self.client = _get_client(api_key, base_url)
 
     async def stream_chat(self, messages: list[dict], params: Optional[ChatParams] = None):
         params = params or ChatParams()

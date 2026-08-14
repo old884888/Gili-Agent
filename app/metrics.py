@@ -4,7 +4,8 @@
 - hit/miss tokens 来自 DeepSeek 响应 usage 字段（服务端权威），真实准确
 - 成本 = 分模型定价 × 汇率（估算，价格以官网为准，含峰值时段政策不确定性）
 - 延迟含网络流式传输时间（近似）
-- 推理 token 按输出价计费，此处成本估算未包含（输出价远高于输入，后续补）
+- 输出 token（含推理）按输出价计费；输出价为未命中价 × 4 的占位估算（参照 v3.2
+  输入/输出比），实际以官网价目为准，可在 _PRICING 调整
 """
 from __future__ import annotations
 
@@ -12,15 +13,15 @@ from . import db
 
 # 2026-07 起官方价目（USD/百万 token），汇率 7.3 为估算占位
 _PRICING = {
-    "deepseek-v4-flash": {"hit": 0.0028, "miss": 0.14},
-    "deepseek-v4-pro": {"hit": 0.003625, "miss": 0.435},
+    "deepseek-v4-flash": {"hit": 0.0028, "miss": 0.14, "out": 0.56},
+    "deepseek-v4-pro": {"hit": 0.003625, "miss": 0.435, "out": 1.74},
 }
 _FX = 7.3
 
 
-def _est_cost(model: str, hit: int, miss: int) -> float:
+def _est_cost(model: str, hit: int, miss: int, out: int) -> float:
     p = _PRICING.get(model, _PRICING["deepseek-v4-flash"])
-    return round((hit * p["hit"] + miss * p["miss"]) * _FX / 1_000_000, 5)
+    return round((hit * p["hit"] + miss * p["miss"] + out * p["out"]) * _FX / 1_000_000, 5)
 
 
 def record(
@@ -43,7 +44,7 @@ def record(
         miss_tokens=miss,
         reasoning_tokens=usage.get("reasoning_tokens", 0),
         latency_ms=latency_ms,
-        cost_cny=_est_cost(model, hit, miss),
+        cost_cny=_est_cost(model, hit, miss, usage.get("completion_tokens", 0)),
         cache_invalidated=cache_invalidated,
         conversation_id=conversation_id,
     )

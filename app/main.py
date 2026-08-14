@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import time
 import uuid
@@ -41,9 +42,34 @@ WEB_SEARCH_TOOL = {
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 UPLOADS_DIR = BASE_DIR / "data" / "uploads"
+_UPLOAD_NAME_RE = re.compile(r"^f[0-9a-f]{8}\.(txt|json)$")
+
+
+def _cleanup_uploads(max_age_days: int = 7) -> None:
+    """启动时清理：过期附件 + 历史版本遗留的孤儿原文件（现仅保留 .txt/.json）。"""
+    try:
+        if not UPLOADS_DIR.exists():
+            return
+        cutoff = time.time() - max_age_days * 86400
+        removed = 0
+        for p in UPLOADS_DIR.iterdir():
+            if not p.is_file():
+                continue
+            if p.stat().st_mtime < cutoff or not _UPLOAD_NAME_RE.fullmatch(p.name):
+                try:
+                    p.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        if removed:
+            print(f"[uploads] 启动清理 {removed} 个过期/孤儿附件")
+    except OSError:
+        pass
+
 
 app = FastAPI(title="Gili Agent", version="0.15.0")
 db.init()
+_cleanup_uploads()
 
 # 会话级前缀指纹：指纹变化 = 缓存失效（该请求的日志打标）
 _prefix_fps: dict[str, str] = {}
@@ -369,7 +395,7 @@ async def upload_file(file: UploadFile = File(...)):
         return {"ok": False, "detail": "无法提取文本（支持 txt/md/csv/json/代码/PDF）"}
     fid = "f" + uuid.uuid4().hex[:8]
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    (UPLOADS_DIR / f"{fid}{suffix}").write_bytes(data)
+    # 只落提取文本与元数据；原文件不再落盘（历史上写后从未读取，纯磁盘泄漏）
     (UPLOADS_DIR / f"{fid}.txt").write_text(text[:20000], encoding="utf-8")
     (UPLOADS_DIR / f"{fid}.json").write_text(
         json.dumps({"name": name, "suffix": suffix}), encoding="utf-8"
@@ -589,92 +615,101 @@ async def chat(req: ChatRequest):
         raw = ""
         reasoning_text = ""
         msgs_for_llm = list(messages)
-        usage_recorded = False
         needs_stream = True
+        error_detail = None
 
-        # 联网技能开启：先非流式探测一轮 —— 需要工具则执行后进入流式回答；
-        # 不需要工具则探测轮内容就是最终答案（避免二次调用导致内容重复）
-        if tools:
-            r1 = await provider.complete(msgs_for_llm, req.params, tools=tools)
-            if r1.get("usage"):
-                metrics.record(
-                    r1["usage"], req.params.model,
-                    int((time.time() - start) * 1000), cache_invalidated,
-                    conversation_id=cid,
-                )
-                usage_recorded = True
-            if r1["tool_calls"]:
-                # 工具结果进【波动区】尾部（缓存只保住它之前的前缀）
-                tool_msgs = [{
-                    "role": "assistant",
-                    "content": r1["content"] or None,
-                    "tool_calls": [
-                        {"id": tc["id"], "type": "function",
-                         "function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                        for tc in r1["tool_calls"]
-                    ],
-                }]
-                for tc in r1["tool_calls"]:
-                    try:
-                        query = (json.loads(tc["arguments"]) or {}).get("query", "")
-                    except json.JSONDecodeError:
-                        query = ""
-                    results = search.search_web(
-                        query,
-                        settings.get("search_provider", "duckduckgo"),
-                        settings.get("tavily_api_key", ""),
-                    )
-                    content = (
-                        search.format_results(results, query)
-                        if results else f"搜索失败：无法获取「{query}」的结果，请告知用户稍后重试或换关键词。"
-                    )
-                    tool_msgs.append({
-                        "role": "tool", "tool_call_id": tc["id"], "content": content,
-                    })
-                    yield _sse({
-                        "event": "tool", "query": query,
-                        "results": len(results) if results else 0,
-                    })
-                msgs_for_llm = [*msgs_for_llm, *tool_msgs]
-            else:
-                # 没触发工具：探测轮内容就是答案（分块补流式观感），不再二次调用
-                raw = r1["content"]
-                needs_stream = False
-                for ch in _chunks(raw):
-                    yield _sse({"event": "delta", "kind": "content", "text": ch})
+        # 用户消息先落库：即使流式失败/断连，消息与 token 成本都不丢
+        if not regen:
+            db.add_message(cid, "user", req.message)
 
-        if needs_stream:
-            async for evt in provider.stream_chat(msgs_for_llm, req.params):
-                yield _sse({"event": "delta", "kind": evt["kind"], "text": evt["text"]})
-                if evt["kind"] == "content":
-                    raw += evt["text"]
-                elif evt["kind"] == "reasoning":
-                    reasoning_text += evt["text"]
-                await asyncio.sleep(0)
+        try:
+            # 联网技能开启：先非流式探测一轮 —— 需要工具则执行后进入流式回答；
+            # 不需要工具则探测轮内容就是最终答案（避免二次调用导致内容重复）
+            if tools:
+                r1 = await provider.complete(msgs_for_llm, req.params, tools=tools)
+                if r1.get("usage"):
+                    metrics.record(
+                        r1["usage"], req.params.model,
+                        int((time.time() - start) * 1000), cache_invalidated,
+                        conversation_id=cid,
+                    )
+                if r1["tool_calls"]:
+                    # 工具结果进【波动区】尾部（缓存只保住它之前的前缀）
+                    tool_msgs = [{
+                        "role": "assistant",
+                        "content": r1["content"] or None,
+                        "tool_calls": [
+                            {"id": tc["id"], "type": "function",
+                             "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                            for tc in r1["tool_calls"]
+                        ],
+                    }]
+                    for tc in r1["tool_calls"]:
+                        try:
+                            query = (json.loads(tc["arguments"]) or {}).get("query", "")
+                        except json.JSONDecodeError:
+                            query = ""
+                        results = search.search_web(
+                            query,
+                            settings.get("search_provider", "duckduckgo"),
+                            settings.get("tavily_api_key", ""),
+                        )
+                        content = (
+                            search.format_results(results, query)
+                            if results else f"搜索失败：无法获取「{query}」的结果，请告知用户稍后重试或换关键词。"
+                        )
+                        tool_msgs.append({
+                            "role": "tool", "tool_call_id": tc["id"], "content": content,
+                        })
+                        yield _sse({
+                            "event": "tool", "query": query,
+                            "results": len(results) if results else 0,
+                        })
+                    msgs_for_llm = [*msgs_for_llm, *tool_msgs]
+                else:
+                    # 没触发工具：探测轮内容就是答案（分块补流式观感），不再二次调用
+                    raw = r1["content"]
+                    needs_stream = False
+                    for ch in _chunks(raw):
+                        yield _sse({"event": "delta", "kind": "content", "text": ch})
+
+            if needs_stream:
+                async for evt in provider.stream_chat(msgs_for_llm, req.params):
+                    yield _sse({"event": "delta", "kind": evt["kind"], "text": evt["text"]})
+                    if evt["kind"] == "content":
+                        raw += evt["text"]
+                    elif evt["kind"] == "reasoning":
+                        reasoning_text += evt["text"]
+                    await asyncio.sleep(0)
+        except Exception as e:  # noqa: BLE001 —— 网络/API 失败：保留部分回答并通知前端
+            print(f"[chat-error] {type(e).__name__}: {e}")
+            error_detail = f"请求失败：{e}"
+
         usage = provider.last_usage or {}
         latency = int((time.time() - start) * 1000)
-        if usage and not usage_recorded:
+        # 流式轮真实跑过才记这一轮 usage（探测轮已单独记账；两轮都真实花钱都入账）
+        if usage and needs_stream:
             metrics.record(usage, req.params.model, latency, cache_invalidated, conversation_id=cid)
 
         # 落库（提示词已构建完，此时追加不影响本次请求）
         if regen:
             db.deactivate_group(version_group)
-            new_msg = db.add_message(
-                cid, "assistant", raw,
-                reasoning=reasoning_text,
-                version_group=version_group,
-                version_no=version_no,
-                sources=json.dumps(knowledge.source_meta(kb_sources), ensure_ascii=False)
-                if kb_sources else None,
-            )
-        else:
-            db.add_message(cid, "user", req.message)
+        new_msg = None
+        if raw.strip() or not error_detail:
             new_msg = db.add_message(
                 cid, "assistant", raw, reasoning=reasoning_text,
+                version_group=version_group, version_no=version_no,
                 sources=json.dumps(knowledge.source_meta(kb_sources), ensure_ascii=False)
                 if kb_sources else None,
             )
         db.touch(cid)
+
+        if error_detail:
+            yield _sse({
+                "event": "error", "detail": error_detail,
+                "message_id": new_msg["id"] if new_msg else None,
+            })
+            return
 
         yield _sse({
             "event": "done",
@@ -778,6 +813,21 @@ async def add_memory(item: MemoryItem):
     row = db.add_memory_item(item.layer, item.content, importance=item.importance)
     knowledge.reindex_memory(row["id"])
     return {"status": "ok", "item": row}
+
+
+@app.put("/api/memory/{item_id}")
+async def edit_memory(item_id: str, body: dict):
+    """编辑记忆内容/重要度（低频区变化 → 前缀指纹变化 → 自动记账缓存失效）。"""
+    item = db.get_memory_item(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    content = body.get("content")
+    importance = body.get("importance")
+    if content is None and importance is None:
+        raise HTTPException(status_code=400, detail="没有要修改的内容")
+    db.update_memory_item(item_id, content=content, importance=importance)
+    knowledge.reindex_memory(item_id)
+    return {"status": "ok", "item": db.get_memory_item(item_id)}
 
 
 @app.delete("/api/memory/{item_id}")

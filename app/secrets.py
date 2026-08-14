@@ -28,7 +28,34 @@ def _blob_bytes(blob: _DATA_BLOB) -> bytes:
     return ctypes.string_at(blob.pbData, blob.cbData)
 
 
+_CONFIGURED = False
+
+
+def _configure_crypt32() -> None:
+    """一次性声明 DPAPI 函数签名（描述串按 LPCWSTR 传递，返回值显式 bool）。"""
+    global _CONFIGURED
+    if _CONFIGURED:
+        return
+    _CONFIGURED = True
+    try:
+        crypt32 = ctypes.windll.crypt32
+        pblob = ctypes.POINTER(_DATA_BLOB)
+        sig = [pblob, ctypes.c_wchar_p, pblob, ctypes.c_void_p, ctypes.c_void_p,
+               ctypes.c_uint32, pblob]
+        crypt32.CryptProtectData.argtypes = sig
+        crypt32.CryptProtectData.restype = ctypes.c_bool
+        crypt32.CryptUnprotectData.argtypes = [
+            pblob, ctypes.POINTER(ctypes.c_wchar_p), pblob,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, pblob,
+        ]
+        crypt32.CryptUnprotectData.restype = ctypes.c_bool
+        ctypes.windll.kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    except Exception:
+        _CONFIGURED = False  # 失败则退回 ctypes 默认转换，不阻塞加解密
+
+
 def _crypt32():
+    _configure_crypt32()
     return ctypes.windll.crypt32
 
 
@@ -71,6 +98,8 @@ def decrypt(value: str) -> str:
         raw = base64.b64decode(value[len(_PREFIX):])
         data_in = _blob(raw)
         data_out = _DATA_BLOB()
+        # 注意：encrypt 里的 "GiliAgent" 是描述串（第 2 参，仅展示用途），不是熵；
+        # 熵（第 3 参）两侧都传 None —— 解密不需要描述串匹配，与历史密文完全兼容。
         ok = _crypt32().CryptUnprotectData(
             ctypes.byref(data_in),
             None,
