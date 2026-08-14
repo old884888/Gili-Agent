@@ -41,9 +41,6 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove("show"), 2400);
 }
 
-function stubNote(name) {
-  toast(`【原型】「${name}」已就位，重逻辑将在阶段二/三接入`);
-}
 
 // ---------- 状态 ----------
 
@@ -109,32 +106,6 @@ function renderMermaid(root) {
   mermaid.run({ nodes }).catch(() => {});
 }
 
-function renderMessageContent(el, raw) {
-  el.dataset.raw = raw;
-  if (window.marked && window.DOMPurify) {
-    try {
-      const html = DOMPurify.sanitize(marked.parse(raw, { gfm: true, breaks: true }));
-      el.classList.add("md");
-      el.innerHTML = html;
-      renderMermaid(el);
-      return true;
-    } catch { /* 降级为纯文本 */ }
-  }
-  el.textContent = raw;
-  return false;
-}
-
-function toggleMarkdown(el, btn) {
-  const raw = el.dataset.raw;
-  if (!raw) return;
-  if (el.classList.contains("md")) {
-    el.classList.remove("md");
-    el.textContent = raw;
-    btn.textContent = "渲染";
-  } else if (renderMessageContent(el, raw)) {
-    btn.textContent = "源码";
-  }
-}
 
 // ---------- 会话列表 ----------
 
@@ -142,38 +113,8 @@ function toggleMarkdown(el, btn) {
 let multiMode = false;
 let multiSelected = new Set();
 
-function setMultiMode(on) {
-  multiMode = on;
-  multiSelected.clear();
-  $("#multi-bar").classList.toggle("hidden", !on);
-  const menu = $("#multi-menu");
-  if (menu) menu.classList.add("hidden");
-  $("#btn-multi-del").textContent = on ? "✕ 退出" : "🗑 多选";
-  updateMultiCount();
-  loadConversations();
-}
-function updateMultiCount() {
-  $("#multi-count").textContent = `已选 ${multiSelected.size} 项`;
-}
 $("#btn-multi-del").onclick = () => setMultiMode(!multiMode);
 $("#btn-multi-cancel").onclick = () => setMultiMode(false);
-$("#btn-multi-confirm").onclick = async () => {
-  if (!multiSelected.size) return toast("先勾选要删除的对话");
-  if (!confirm(`删除选中的 ${multiSelected.size} 个对话？消息和摘要将永久删除，不可恢复。`)) return;
-  let ok = 0;
-  for (const cid of multiSelected) {
-    try { await api(`/api/conversations/${cid}`, { method: "DELETE" }); ok++; } catch { /* 跳过 */ }
-  }
-  if (currentConv && multiSelected.has(currentConv)) {
-    currentConv = null;
-    $("#chat-title").textContent = "未命名对话";
-    $("#messages").innerHTML = "";
-    updateEmptyState();
-  }
-  toast(`已删除 ${ok} 个对话`);
-  setMultiMode(false);
-  loadConversations();
-};
 
 /* ============================================================================
    Gili UI v4 —— 字号设置 / 学习项目顶栏绑定徽标
@@ -514,15 +455,6 @@ document.addEventListener("click", (e) => {
 
 /* ---------- 气泡操作菜单（复制 / 重新生成 / 编辑 / 删除） ---------- */
 
-function toggleMsgMenu(btn, menu) {
-  if (!menu) return;
-  const msg = btn.closest(".msg");
-  if (msg) {
-    const rect = msg.getBoundingClientRect();
-    menu.classList.toggle("up", rect.bottom > window.innerHeight - 240);
-  }
-  menu.classList.toggle("hidden");
-}
 
 async function deleteMessageBubble(el) {
   if (!el.dataset.msgId) return toast("消息还没保存，无法删除");
@@ -536,11 +468,6 @@ async function deleteMessageBubble(el) {
   }
 }
 
-document.addEventListener("click", (e) => {
-  if (!e.target.closest(".msg-more-btn")) {
-    $$(".msg-more-menu").forEach((m) => m.classList.add("hidden"));
-  }
-});
 
 /* ---------- 学习对话快捷命令 chips ---------- */
 
@@ -590,10 +517,11 @@ $("#btn-market-clear").onclick = () => {
   renderMarketCards(marketItems);
 };
 
-function filteredMarketItems() {
+function filteredMarketItems(items) {
+  const list = Array.isArray(items) ? items : marketItems;
   const q = marketSearch.trim().toLowerCase();
-  if (!q) return marketItems;
-  return marketItems.filter((s) =>
+  if (!q) return list;
+  return list.filter((s) =>
     [s.id, s.name, s.desc, s.repo || ""].join(" ").toLowerCase().includes(q)
   );
 }
@@ -616,7 +544,7 @@ async function renderSkillsMarket() {
 function renderMarketCards(items) {
   const grid = $("#market-grid");
   if (!grid) return;
-  const visible = filteredMarketItems();
+  const visible = filteredMarketItems(items);
   if (!visible.length) {
     grid.innerHTML = `<div class="studio-side-empty">没有匹配「${esc(marketSearch)}」的技能</div>`;
     return;
@@ -708,87 +636,6 @@ function renderMarketCards(items) {
 
 let skillsCache = null;
 
-function renderSkillItems(list, items) {
-  if (!list) return;
-  const on = (settingsCache && settingsCache.skills) || {};
-  list.innerHTML = "";
-  for (const sk of items) {
-    const el = document.createElement("div");
-    el.className = "skill-item" + (sk.future ? " future" : "") + (sk.user ? " user" : "");
-    el.innerHTML = `
-      <div class="skill-head">
-        <span class="skill-name">${esc(sk.name)}${sk.user ? ' <span class="badge">已安装</span>' : ""}</span>
-        ${sk.user ? '<button class="skill-user-del" title="卸载技能">🗑</button>' : ""}
-        <label class="switch"><input type="checkbox" data-skill="${sk.id}"
-          ${on[sk.id] ? "checked" : ""} ${sk.future ? "disabled" : ""}>
-          <span class="slider"></span></label>
-      </div>
-      <div class="skill-desc">${esc(sk.desc)}</div>`;
-    const delBtn = el.querySelector(".skill-user-del");
-    if (delBtn) {
-      delBtn.onclick = async () => {
-        if (delBtn.dataset.armed) {
-          delBtn.dataset.armed = "";
-          try {
-            await api("/api/skills/uninstall", {
-              method: "POST",
-              body: JSON.stringify({ id: sk.id }),
-            });
-            toast(`已卸载「${sk.name}」`);
-            skillsCache = null;
-            await renderSkills();
-            if (!$("#skills-market-modal").classList.contains("hidden")) {
-              await renderSkillsMarket();
-            }
-          } catch (e) {
-            toast("卸载失败: " + e.message);
-          }
-        } else {
-          delBtn.dataset.armed = "1";
-          delBtn.textContent = "再点确认";
-          setTimeout(() => {
-            if (delBtn.isConnected) {
-              delBtn.dataset.armed = "";
-              delBtn.textContent = "🗑";
-            }
-          }, 2600);
-        }
-      };
-    }
-    const input = el.querySelector("input");
-    input.onchange = async (e) => {
-      const state = { ...((settingsCache && settingsCache.skills) || {}), [sk.id]: e.target.checked };
-      try {
-        await api("/api/settings", { method: "PUT", body: JSON.stringify({ skills: state }) });
-        toast(`${sk.name} 已${e.target.checked ? "开启" : "关闭"}（稳定区已变化，缓存将失效）`);
-        settingsCache = { ...(settingsCache || {}), skills: state };
-      } catch (err) {
-        e.target.checked = !e.target.checked; // 回弹，避免 UI 与后端不一致
-        toast("保存失败: " + err.message);
-      }
-    };
-    list.appendChild(el);
-  }
-}
-
-async function renderSkills() {
-  const list = $("#skill-list");
-  if (!list) return;
-  if (skillsCache) {
-    renderSkillItems(list, skillsCache); // 先用缓存即时渲染
-  } else {
-    list.innerHTML =
-      '<div class="skill-item ui-shimmer"></div>'.repeat(4);
-  }
-  try {
-    const cfg = await api("/api/config");
-    skillsCache = cfg.skills || [];
-    renderSkillItems(list, skillsCache);
-  } catch (e) {
-    if (!skillsCache) list.innerHTML = `<div class="mem-empty">技能加载失败：${esc(e.message)}</div>`;
-    else toast("技能列表刷新失败: " + e.message);
-  }
-}
 
 // 时间格式化：今天/昨天显示相对时间，今年显示 M-D HH:MM，更早显示 YY-M-D
 function fmtTime(ts) {
@@ -807,142 +654,9 @@ function fmtTime(ts) {
   return `${String(d.getFullYear()).slice(2)}-${md}`;
 }
 
-async function loadConversations() {
-  const list = $("#conv-list");
-  if (!list || !list.children.length) {
-    // 加载占位：明确"正在加载"，避免误以为卡死
-    list.innerHTML = '<div class="conv-loading"><span class="spin"></span> 加载会话…</div>';
-  }
-  try {
-    const { items } = await api("/api/conversations");
-    list.innerHTML = "";
-    const frag = document.createDocumentFragment();
-    for (const c of items) {
-      const isLearning = !!c.project_id;
-      const isSel = multiSelected.has(c.id);
-      const el = document.createElement("div");
-      el.className = "conv-item" + (c.id === currentConv ? " active" : "") + (isLearning ? " learning" : "") + (isSel ? " selected" : "");
-      el.dataset.id = c.id;
-      el.innerHTML = `
-        ${multiMode ? `<input type="checkbox" class="conv-check" ${isSel ? "checked" : ""}>` : ""}
-        <div class="conv-avatar">${isLearning ? emojiFor(c.project_subject) : "💬"}</div>
-        <div class="conv-body">
-          <div class="conv-t"><span class="t-text">${esc(c.title)}</span>${c.favorite ? '<span class="fav-star">⭐</span>' : ""}</div>
-          <div class="conv-m">
-            ${isLearning ? '<span class="badge lc-badge">🎓 学习项目</span>' : ""}
-            <span>${fmtTime(c.updated_at)} · ${c.msg_count} 条消息</span>
-          </div>
-        </div>
-        ${multiMode ? "" : `<div class="conv-ops">
-          <button data-op="rename" title="重命名">✏️</button>
-          <button data-op="ai" title="AI 起标题">🤖</button>
-          <button data-op="del" title="删除">🗑</button>
-        </div>`}`;
-      if (isLearning) {
-        el.querySelector(".conv-avatar").style.background = CARD_GRADIENTS[Math.abs(hash(c.project_subject)) % CARD_GRADIENTS.length];
-        el.querySelector(".conv-avatar").style.border = "none";
-      }
-      const clickCard = () => {
-        if (multiMode) {
-          const cb = el.querySelector(".conv-check");
-          cb.checked = !cb.checked;
-          if (cb.checked) multiSelected.add(c.id); else multiSelected.delete(c.id);
-          el.classList.toggle("selected", cb.checked);
-          updateMultiCount();
-        } else {
-          openConversation(c.id, c.title, c.favorite);
-        }
-      };
-      el.onclick = clickCard;
-      if (multiMode) {
-        el.querySelector(".conv-check").onclick = (e) => { e.stopPropagation(); clickCard(); };
-      }
-      el.querySelector('[data-op="rename"]').onclick = async (e) => {
-        e.stopPropagation();
-        const t = prompt("输入新标题：", c.title);
-        if (!t || !t.trim()) return;
-        try {
-          const r = await api(`/api/conversations/${c.id}`, { method: "PUT", body: JSON.stringify({ title: t.trim() }) });
-          if (r.status === "ok") { toast(`已重命名为「${r.title}」`); if (c.id === currentConv) $("#chat-title").textContent = r.title; loadConversations(); }
-          else toast(r.detail || "重命名失败");
-        } catch (err) { toast("重命名失败: " + err.message); }
-      };
-      el.querySelector('[data-op="ai"]').onclick = async (e) => {
-        e.stopPropagation();
-        try {
-          const r = await api(`/api/conversations/${c.id}/auto-title`, { method: "POST" });
-          if (r.ok) { toast(`AI 标题：「${r.title}」`); if (c.id === currentConv) $("#chat-title").textContent = r.title; loadConversations(); }
-          else toast(r.detail || "起标题失败");
-        } catch (err) { toast("起标题失败: " + err.message); }
-      };
-      el.querySelector('[data-op="del"]').onclick = async (e) => {
-        e.stopPropagation();
-        if (!confirm(`删除对话「${c.title}」？\n消息和摘要将被永久删除，此操作不可恢复。`)) return;
-        try {
-          await api(`/api/conversations/${c.id}`, { method: "DELETE" });
-          toast("对话已删除");
-          if (currentConv === c.id) { currentConv = null; $("#chat-title").textContent = "未命名对话"; $("#messages").innerHTML = ""; updateEmptyState(); }
-          loadConversations();
-        } catch (err) { toast("删除失败: " + err.message); }
-      };
-      frag.appendChild(el);
-    }
-    list.appendChild(frag);
-  } catch (e) {
-    // 失败占位：可点击重试
-    list.innerHTML = '<div class="conv-loading err">加载失败，点击重试</div>';
-    const retry = list.querySelector(".conv-loading");
-    if (retry) retry.onclick = loadConversations;
-    toast("会话列表加载失败: " + e.message);
-  }
-}
 
 let currentFav = false;
 
-async function openConversation(cid, title, favorite = false) {
-  currentConv = cid;
-  currentFav = !!favorite;
-  $("#btn-fav").textContent = currentFav ? "★ 已收藏" : "☆ 收藏";
-  $$(".conv-item").forEach((x) => x.classList.remove("active"));
-  const el = document.querySelector(`.conv-item[data-id="${cid}"]`);
-  if (el) el.classList.add("active");
-  $("#chat-title").textContent = title;
-  $("#messages").innerHTML = "";
-  updateEmptyState();
-  try {
-    const { items } = await api(`/api/conversations/${cid}/messages`);
-    for (const m of items) {
-      appendMessage(m.role === "assistant" ? "assistant" : "user", m.content, false, {
-        reasoning: m.reasoning || "",
-        versions: m.versions_count || 0,
-        versionNo: m.version_no || 1,
-        group: m.version_group || "",
-        msgId: m.id,
-        quickOptions: m.quick_options ? JSON.parse(m.quick_options) : null,
-      });
-    }
-    if (!items.length) appendMessage("assistant", "这是一段新对话，说点什么吧。");
-    scrollToBottom(true);
-    refreshMemoryBar();
-    refreshMetrics();
-  } catch (e) {
-    toast("消息加载失败: " + e.message);
-  }
-}
-
-$("#btn-new-chat").onclick = async () => {
-  try {
-    const conv = await api("/api/conversations", { method: "POST" });
-    currentConv = conv.id;
-    $("#chat-title").textContent = conv.title;
-    $("#messages").innerHTML = "";
-    updateEmptyState();
-    appendMessage("assistant", "新对话已创建。聊天内容会自动保存在本地，随时可以回来继续。");
-    await loadConversations();
-  } catch (e) {
-    toast("新建失败: " + e.message);
-  }
-};
 
 // ---------- 聊天区 ----------
 
@@ -997,27 +711,6 @@ function fallbackCopy(text, done) {
 }
 
 // 思考链：折叠条 + 内容块（流式/历史加载共用）
-function ensureReasoningBlock(el) {
-  let box = el.querySelector(".reasoning");
-  if (!box) {
-    const toggle = document.createElement("button");
-    toggle.className = "reasoning-toggle";
-    toggle.textContent = "💭 思考链";
-    box = document.createElement("div");
-    box.className = "reasoning hidden";
-    toggle.onclick = () => {
-      box.classList.toggle("hidden");
-      toggle.textContent = box.classList.contains("hidden") ? "💭 思考链" : "💭 收起";
-    };
-    el.insertBefore(toggle, el.querySelector(".content"));
-    el.insertBefore(box, el.querySelector(".content"));
-  }
-  return box;
-}
-function addReasoningBlock(el, reasoning) {
-  const box = ensureReasoningBlock(el);
-  box.textContent = "💭 " + reasoning;
-}
 
 // 版本切换条（v2/2 ◀ ▶）
 function addVersionBar(el, versionNo, count) {
@@ -1099,63 +792,6 @@ function startEdit(el, contentDiv) {
   box.querySelector("textarea").focus();
 }
 
-function appendMessage(role, text, typing = false, extra = {}) {
-  const el = document.createElement("div");
-  el.className = `msg ${role}${typing ? " typing" : ""}`;
-  el.dataset.msgId = extra.msgId || "";
-  el.dataset.group = extra.group || "";
-  el.dataset.vno = extra.versionNo || 1;
-  if (role === "assistant") {
-    // 结构：who + 操作条（复制/重新生成/MD）→ 版本条 → 思考链 → content
-    // 注意：innerHTML 必须单行 —— .msg 是 pre-wrap，模板里的换行会渲染成空行
-    el.innerHTML = `<div class="who"><span>Gili</span><span class="msg-ops"><button data-op="copy" title="复制">📋</button><button data-op="regen" title="重新生成">🔄</button><button class="md-toggle" title="Markdown 源码/渲染切换">MD</button></span></div><div class="content"></div>`;
-    const content = el.querySelector(".content");
-    content.textContent = text || "";
-    el.querySelector(".md-toggle").onclick = () =>
-      toggleMarkdown(content, el.querySelector(".md-toggle"));
-    el.querySelector('[data-op="copy"]').onclick = () =>
-      copyText(content.dataset.raw || content.textContent);
-    el.querySelector('[data-op="regen"]').onclick = () => {
-      if (!el.dataset.msgId) return toast("消息还没保存，稍后再重新生成");
-      sendChat("", el.dataset.msgId);
-    };
-    if (!typing && text) {
-      if (renderMessageContent(content, text)) {
-        el.querySelector(".md-toggle").textContent = "源码";
-      }
-    }
-    if (extra.reasoning) addReasoningBlock(el, extra.reasoning);
-    addVersionBar(el, extra.versionNo || 1, extra.versions || 0);
-    if (extra.quickOptions && extra.quickOptions.length) {
-      // 学习模式引导选项卡（点击 = 回答并推进状态机）
-      const box = document.createElement("div");
-      box.className = "msg-options";
-      for (const o of extra.quickOptions) {
-        const b = document.createElement("button");
-        b.className = "opt-chip";
-        b.textContent = o;
-        b.onclick = async () => {
-          b.disabled = true;
-          await answerLearningOption(o);
-        };
-        box.appendChild(b);
-      }
-      el.appendChild(box);
-    }
-  } else {
-    el.innerHTML = `<div class="msg-ops"><button data-op="copy" title="复制">📋</button><button data-op="edit" title="编辑">✏️</button></div><div class="content"></div>`;
-    const content = el.querySelector(".content");
-    content.textContent = text || "";
-    if (text && window.marked) renderMessageContent(content, text);
-    el.querySelector('[data-op="copy"]').onclick = () =>
-      copyText(content.dataset.raw || content.textContent);
-    el.querySelector('[data-op="edit"]').onclick = () => startEdit(el, content);
-  }
-  $("#messages").appendChild(el);
-  updateEmptyState();
-  scrollToBottom();
-  return el;
-}
 
 function collectParams() {
   return {
@@ -1243,10 +879,11 @@ async function refreshMemoryBar() {
   } catch { /* 静默失败，不打断聊天 */ }
 }
 
-function openMemUsageModal() {
+async function openMemUsageModal() {
+  if (!window._memUsage) await refreshMemoryBar();
+  if (!window._memUsage) { toast("记忆用量加载失败，请稍后重试"); return; }
   const u = window._memUsage;
-  if (!u) return refreshMemoryBar().then(openMemUsageModal);
-  const pct = (x) => Math.min(100, Math.round((x / u.budget) * 100));
+  const pct = (x) => Math.min(100, Math.round((x / (u.budget || 1)) * 100));
   $("#mu-stable").style.width = pct(u.stable) + "%";
   $("#mu-lowfreq").style.width = pct(u.lowfreq) + "%";
   $("#mu-volatile").style.width = pct(u.volatile) + "%";
@@ -1281,113 +918,6 @@ async function sendMessage() {
 }
 
 // 统一发送管道：正常对话 / 重新生成（regenId 指定目标 AI 消息）
-async function sendChat(text, regenId) {
-  if (streaming) return;
-  let userEl = null;
-  if (!regenId) userEl = appendMessage("user", text);
-  const msgEl = appendMessage("assistant", "", true);
-  let rawContent = ""; // 流式期间累积原文，结束后一次性渲染 Markdown
-  let rawReasoning = "";
-  streaming = true;
-  setSendState();
-
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        conversation_id: currentConv,
-        message: text,
-        regenerate_message_id: regenId,
-        ...collectParams(),
-      }),
-    });
-    if (!res.ok) throw new Error(`/api/chat -> ${res.status}`);
-
-    // 学习模式拦截：响应是普通 JSON（引导消息已落库）→ 刷新对话显示
-    if ((res.headers.get("content-type") || "").includes("application/json")) {
-      const j = await res.json();
-      msgEl.remove();
-      if (j.mode !== "learning") throw new Error("chat 响应异常");
-      if (j.status === "created") toast("🎉 学习项目创建成功！");
-      streaming = false;
-      setSendState();
-      await reloadCurrentConv();
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop();
-      for (const part of parts) {
-        if (!part.startsWith("data:")) continue;
-        const evt = JSON.parse(part.slice(5).trim());
-        if (evt.event === "start") {
-          currentConv = evt.conversation_id || currentConv;
-        } else if (evt.event === "tool") {
-          // 联网搜索提示（结果已进波动区，模型正在基于结果回答）
-          const tip = document.createElement("div");
-          tip.className = "tool-tip";
-          tip.textContent = `🔍 已联网搜索「${evt.query}」（${evt.results} 条结果）`;
-          msgEl.insertBefore(tip, msgEl.querySelector(".content"));
-        } else if (evt.event === "delta") {
-          if (evt.kind === "reasoning") {
-            rawReasoning += evt.text;
-            ensureReasoningBlock(msgEl).textContent = "💭 " + rawReasoning;
-          } else {
-            msgEl.querySelector(".content").textContent += evt.text;
-            rawContent += evt.text;
-          }
-          scrollToBottom();
-        } else if (evt.event === "done") {
-          msgEl.dataset.msgId = evt.message_id || "";
-          msgEl.dataset.group = evt.version_group || msgEl.dataset.msgId;
-          msgEl.dataset.vno = evt.version_no || 1;
-          if (Array.isArray(evt.sources) && evt.sources.length) {
-            msgEl._sources = evt.sources;
-          }
-          if (regenId) {
-            // 旧版本节点淡显 + 新节点版本条
-            const oldNode = document.querySelector(`.msg[data-msg-id="${regenId}"]`);
-            if (oldNode) {
-              oldNode.classList.add("stale");
-              oldNode.dataset.group = evt.version_group || oldNode.dataset.group;
-              oldNode.dataset.vno = "1";
-            }
-            addVersionBar(msgEl, evt.version_no || 2, evt.versions_count || 2);
-            toast(`已重新生成 v${evt.version_no || 2}（旧版保留，可切换查看）`);
-          }
-          const truncated = evt.usage && evt.usage.finish_reason === "length";
-          toast(
-            `usage：命中 ${evt.usage.prompt_cache_hit_tokens ?? 0} / 未命中 ${evt.usage.prompt_cache_miss_tokens ?? 0}` +
-            (evt.cache_invalidated ? " ⚠ 前缀已变，本回合缓存失效" : "") +
-            (truncated ? " ⚠ 被 max_tokens 截断，调大 max_tokens 或降思考强度" : "")
-          );
-          refreshMetrics();
-        }
-      }
-    }
-  } catch (e) {
-    msgEl.querySelector(".content").textContent += "\n[错误] " + e.message;
-  }
-  msgEl.classList.remove("typing");
-  if (rawContent) {
-    const contentDiv = msgEl.querySelector(".content");
-    if (renderMessageContent(contentDiv, rawContent)) {
-      msgEl.querySelector(".md-toggle").textContent = "源码";
-    }
-  }
-  streaming = false;
-  setSendState();
-  loadConversations(); // 刷新标题/消息数（内容已落库）
-  refreshMemoryBar();
-}
 
 function setSendState() {
   $("#btn-send").disabled = streaming;
@@ -1508,6 +1038,9 @@ $("#btn-clear-key").onclick = () => {
 };
 
 $("#btn-close-settings").onclick = () => $("#settings-modal").classList.add("hidden");
+$("#learning-center-modal").onclick = (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden");
+};
 
 // ---------- 参数说明书 ----------
 
@@ -1658,7 +1191,8 @@ function syncThinkingDependent() {
   const panel = $("#tab-params");
   const locked = panel && panel.classList.contains("locked");
   const effort = $("#in-effort");
-  if (effort) effort.disabled = !!locked || !$("#in-thinking").checked;
+  const thinking = $("#in-thinking");
+  if (effort) effort.disabled = !!locked || !(thinking && thinking.checked);
 }
 
 function setParamsLocked(locked) {
@@ -1839,7 +1373,8 @@ $$(".tab").forEach((tab) => {
     $$(".tab").forEach((t) => t.classList.remove("active"));
     $$(".tab-body").forEach((b) => b.classList.remove("active"));
     tab.classList.add("active");
-    $(`#tab-${tab.dataset.tab}`).classList.add("active");
+    const body = $(`#tab-${tab.dataset.tab}`);
+    if (body) body.classList.add("active");
     if (tab.dataset.tab === "data") refreshMetrics();
   };
 });
@@ -1866,7 +1401,49 @@ function renderMemoryItem(box, it) {
       <button data-op="edit" title="编辑">✏️</button>
       <button data-op="del" title="删除">🗑</button>
     </div>`;
-  el.querySelector('[data-op="edit"]').onclick = () => stubNote("记忆编辑");
+  el.querySelector('[data-op="edit"]').onclick = () => {
+    const textEl = el.querySelector(".mem-item-text");
+    const ops = el.querySelector(".mem-item-ops");
+    const ta = document.createElement("textarea");
+    ta.className = "mem-edit";
+    ta.value = it.content;
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "保存";
+    saveBtn.title = "保存修改";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "取消";
+    cancelBtn.title = "取消编辑";
+    const done = () => {
+      textEl.style.display = "";
+      ta.remove();
+      saveBtn.remove();
+      cancelBtn.remove();
+    };
+    const save = async () => {
+      const content = ta.value.trim();
+      if (!content) { ta.focus(); return; }
+      if (content === it.content) { done(); return; }
+      try {
+        await api(`/api/memory/${it.id}`, { method: "PUT", body: JSON.stringify({ content }) });
+        toast("已保存（低频区变化，下次请求缓存失效）");
+        loadMemory();
+      } catch (e) {
+        toast("保存失败: " + e.message);
+        done();
+      }
+    };
+    saveBtn.onclick = save;
+    cancelBtn.onclick = done;
+    ta.onkeydown = (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); }
+      else if (e.key === "Escape") done();
+    };
+    textEl.style.display = "none";
+    textEl.after(ta);
+    ops.appendChild(saveBtn);
+    ops.appendChild(cancelBtn);
+    ta.focus();
+  };
   el.querySelector('[data-op="del"]').onclick = async () => {
     try {
       await api(`/api/memory/${it.id}`, { method: "DELETE" });
@@ -2161,129 +1738,11 @@ $("#btn-learning-docs").onclick = () => { loadLearningProjects().then(openLearni
 // 学习中心
 let learningProjects = [];
 
-async function loadLearningProjects() {
-  try {
-    const r = await api("/api/learning/projects");
-    learningProjects = r.items || [];
-  } catch { /* 静默 */ }
-}
-
-function openLearningCenter() {
-  const cards = $("#learning-cards");
-  cards.innerHTML = "";
-  if (!learningProjects.length) {
-    cards.innerHTML = '<div class="mem-empty">还没有学习项目 —— 点上方按钮创建第一个</div>';
-  }
-  for (let i = 0; i < learningProjects.length; i++) {
-    const p = learningProjects[i];
-    const total = p.chapters_total || 1;
-    const pct = Math.round(((p.chapters_done || 0) / total) * 100);
-    const cardId = `card-${i}`;
-    const el = document.createElement("div");
-    el.className = "learning-card";
-    el.dataset.i = i;
-    el.innerHTML = [
-      `<style>.lc-bg-${i}{background:${CARD_GRADIENTS[i % CARD_GRADIENTS.length]};border-color:rgba(255,255,255,.06)}</style>`,
-      `<div class="lc-head" style="font-size:32px;margin-bottom:2px">${emojiFor(p.subject)}</div>`,
-      `<div class="lc-head"><b>${esc(p.subject)}</b><span class="badge">${esc(p.level_from || "?")} → ${esc(p.level_to || "?")}</span></div>`,
-      `<div class="lc-meta">${p.style || ""} · ${p.chapters_done || 0}/${total} 章已掌握</div>`,
-      `<div class="lc-bar"><div class="lc-fill lc-fill-${i%4}" style="width:${pct}%"></div></div>`,
-      '<div class="lc-actions">',
-      '<button class="btn primary small lc-enter" style="flex:1">进入对话</button>',
-      '<button class="btn small lc-docs" title="查看学习文档（大纲/进度/笔记/疑问）">📄 文档</button>',
-      "</div>",
-    ].join("");
-    el.querySelector(".lc-enter").onclick = async () => {
-      if (p.has_conversation) {
-        $("#learning-center-modal").classList.add("hidden");
-        openConversation(p.conversation_id, p.conversation_title || `${p.subject}学习笔记`, false);
-      } else {
-        toast("该项目的对话已被删除，直接查看文档");
-        openProject(p.id); // 兜底：会话没了就看文档
-      }
-    };
-    el.querySelector(".lc-docs").onclick = () => openProject(p.id);
-    cards.appendChild(el);
-  }
-  $("#learning-center-modal").classList.remove("hidden");
-}
-
-$("#btn-new-project").onclick = async () => {
-  $("#learning-center-modal").classList.add("hidden");
-  try {
-    const conv = await api("/api/conversations", { method: "POST" });
-    await openConversation(conv.id, conv.title);
-    await loadConversations();
-    await enterLearningMode(); // 新对话自动进入学习引导
-  } catch (e) {
-    toast("新建学习对话失败: " + e.message);
-  }
-};
 
 // 项目详情
-let projTab = "outline";
-let projMdRaw = "";
 
-async function openProject(pid) {
-  try {
-    const d = await api(`/api/learning/projects/${pid}`);
-    window._proj = d;
-    const done = d.progress.done, total = d.progress.total;
-    const em = emojiFor(d.project.subject);
-    $("#proj-title").textContent = `${em} ${d.project.subject}`;
-    $("#proj-anchor").textContent = `📍 进度 ${done}/${total} · ${d.project.level_from || "?"} → ${d.project.level_to || "?"}`;
-    projTab = "outline";
-    renderProjTabs();
-    showProjTab("outline");
-    $("#project-modal").classList.remove("hidden");
-    $("#learning-center-modal").classList.add("hidden");
-  } catch (e) { toast("打开失败: " + e.message); }
-}
-
-function renderProjTabs() {
-  const tabs = [["outline", "大纲"], ["progress", "进度表"], ["notes", "笔记"], ["questions", "疑问本"]];
-  const bar = $("#proj-tabs");
-  bar.innerHTML = "";
-  for (const [key, label] of tabs) {
-    const b = document.createElement("button");
-    b.className = "proj-tab" + (key === projTab ? " active" : "");
-    b.textContent = label;
-    b.onclick = () => { projTab = key; renderProjTabs(); showProjTab(key); };
-    bar.appendChild(b);
-  }
-}
-
-function showProjTab(key) {
-  const d = window._proj;
-  const notes = d.notes || [];
-  const findNote = (name) => notes.find((n) => n.filename === name);
-  let content = "";
-  if (key === "outline") content = (findNote("大纲.md") || {}).content || "";
-  else if (key === "progress") content = (findNote("进度表.md") || {}).content || "";
-  else if (key === "notes") content = (findNote("笔记.md") || {}).content || "";
-  else content = (findNote("疑问本.md") || {}).content || "";
-  projMdRaw = content;
-  renderMessageContent($("#proj-content"), content);
-  $("#proj-md-toggle").textContent = content ? "源码" : "MD";
-}
-$("#proj-md-toggle").onclick = () => {
-  const el = $("#proj-content");
-  if (el.classList.contains("md")) {
-    el.classList.remove("md");
-    el.textContent = projMdRaw;
-    $("#proj-md-toggle").textContent = "渲染";
-  } else {
-    renderMessageContent(el, projMdRaw);
-    $("#proj-md-toggle").textContent = "源码";
-  }
-};
 
 // modal 关闭
-$("#btn-close-center").onclick = () => $("#learning-center-modal").classList.add("hidden");
-$("#btn-close-project").onclick = () => $("#project-modal").classList.add("hidden");
-["#learning-center-modal", "#project-modal"].forEach((sel) => {
-  $(sel).onclick = (e) => { if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden"); };
-});
 
 // ---------- 启动 ----------
 
@@ -2577,98 +2036,6 @@ function addReasoningBlock(el, reasoning, live = false) {
 
 // ---------- 聊天气泡 ----------
 
-function appendMessage(role, text, typing = false, extra = {}) {
-  const el = document.createElement("div");
-  el.className = `msg ${role}${typing ? " typing" : ""}`;
-  el.dataset.msgId = extra.msgId || "";
-  el.dataset.group = extra.group || "";
-  el.dataset.vno = extra.versionNo || 1;
-
-  if (role === "assistant") {
-    el.innerHTML =
-      '<div class="who"><span class="who-name"><i class="who-dot"></i>Gili</span>' +
-      '<span class="msg-ops"><button data-op="copy" title="复制">📋</button>' +
-      '<button class="msg-more-btn" data-op="more" title="更多">⋯</button></span></div>' +
-      '<div class="msg-more-menu hidden">' +
-      '<button data-op="regen">🔄 重新生成</button>' +
-      '<button class="md-toggle" data-op="md">MD 源码/渲染</button>' +
-      '<button data-op="del">🗑 删除</button></div>' +
-      '<div class="content"></div>';
-    const content = el.querySelector(".content");
-    if (typing) {
-      content.innerHTML = '<span class="typing-dots"><i></i><i></i><i></i></span>';
-    } else {
-      content.textContent = text || "";
-    }
-    const mdToggle = el.querySelector(".md-toggle");
-    mdToggle.onclick = () => toggleMarkdown(content, mdToggle);
-    el.querySelector('[data-op="copy"]').onclick = () =>
-      copyText(content.dataset.raw || content.textContent);
-    const moreBtn = el.querySelector(".msg-more-btn");
-    const moreMenu = el.querySelector(".msg-more-menu");
-    moreBtn.onclick = (e) => {
-      e.stopPropagation();
-      $$(".msg-more-menu").forEach((m) => { if (m !== moreMenu) m.classList.add("hidden"); });
-      toggleMsgMenu(moreBtn, moreMenu);
-    };
-    el.querySelector('[data-op="regen"]').onclick = () => {
-      if (!el.dataset.msgId) return toast("消息还没保存，稍后再重新生成");
-      sendChat("", el.dataset.msgId);
-    };
-    el.querySelector('[data-op="del"]').onclick = () => deleteMessageBubble(el);
-    if (!typing && text) {
-      if (renderMessageContent(content, text)) mdToggle.textContent = "源码";
-    }
-    if (Array.isArray(extra.sources) && extra.sources.length) {
-      el._sources = extra.sources;
-      renderCitations(content, extra.sources);
-    }
-    if (extra.reasoning) addReasoningBlock(el, extra.reasoning);
-    addVersionBar(el, extra.versionNo || 1, extra.versions || 0);
-    if (extra.quickOptions && extra.quickOptions.length) {
-      const box = document.createElement("div");
-      box.className = "msg-options";
-      for (const o of extra.quickOptions) {
-        const b = document.createElement("button");
-        b.className = "opt-chip";
-        b.textContent = o;
-        b.onclick = async () => {
-          b.disabled = true;
-          await answerLearningOption(o);
-        };
-        box.appendChild(b);
-      }
-      el.appendChild(box);
-    }
-  } else {
-    el.innerHTML =
-      '<div class="msg-ops"><button data-op="copy" title="复制">📋</button>' +
-      '<button class="msg-more-btn" data-op="more" title="更多">⋯</button></div>' +
-      '<div class="msg-more-menu hidden">' +
-      '<button data-op="edit">✏️ 编辑</button>' +
-      '<button data-op="del">🗑 删除</button></div>' +
-      '<div class="content"></div>';
-    const content = el.querySelector(".content");
-    content.textContent = text || "";
-    if (text && window.marked) renderMessageContent(content, text);
-    el.querySelector('[data-op="copy"]').onclick = () =>
-      copyText(content.dataset.raw || content.textContent);
-    const moreBtn = el.querySelector(".msg-more-btn");
-    const moreMenu = el.querySelector(".msg-more-menu");
-    moreBtn.onclick = (e) => {
-      e.stopPropagation();
-      $$(".msg-more-menu").forEach((m) => { if (m !== moreMenu) m.classList.add("hidden"); });
-      toggleMsgMenu(moreBtn, moreMenu);
-    };
-    el.querySelector('[data-op="edit"]').onclick = () => startEdit(el, content);
-    el.querySelector('[data-op="del"]').onclick = () => deleteMessageBubble(el);
-  }
-
-  $("#messages").appendChild(el);
-  updateEmptyState();
-  scrollToBottom();
-  return el;
-}
 
 // ---------- 流式发送（逐块淡入 + 思考脉冲 + 生成呼吸光） ----------
 
@@ -2776,6 +2143,9 @@ async function sendChat(text, regenId) {
           refreshMetrics();
         } else if (evt.event === "proposal") {
           proposalReady = true;
+        } else if (evt.event === "error") {
+          if (evt.message_id) msgEl.dataset.msgId = evt.message_id;
+          throw new Error(evt.detail || "请求失败");
         }
       }
     }
@@ -3352,6 +2722,7 @@ function appendMessage(role, text, typing = false, extra = {}) {
       '<div class="who"><span class="who-name"><i class="who-dot"></i>Gili</span>' +
       '<span class="msg-ops"><button data-op="copy" title="复制">📋</button>' +
       '<button data-op="regen" title="重新生成">🔄</button>' +
+      '<button data-op="del" title="删除">🗑️</button>' +
       '<button class="md-toggle" title="Markdown 源码/渲染切换">MD</button></span></div>' +
       '<div class="content"></div>';
     const content = el.querySelector(".content");
@@ -3368,6 +2739,7 @@ function appendMessage(role, text, typing = false, extra = {}) {
       if (!el.dataset.msgId) return toast("消息还没保存，稍后再重新生成");
       sendChat("", el.dataset.msgId);
     };
+    el.querySelector('[data-op="del"]').onclick = () => deleteMessageBubble(el);
     if (!typing && text) {
       if (renderMessageContent(content, text)) mdToggle.textContent = "源码";
     }
@@ -3429,7 +2801,8 @@ function appendMessage(role, text, typing = false, extra = {}) {
   } else {
     el.innerHTML =
       '<div class="msg-ops"><button data-op="copy" title="复制">📋</button>' +
-      '<button data-op="edit" title="编辑">✏️</button></div>' +
+      '<button data-op="edit" title="编辑">✏️</button>' +
+      '<button data-op="del" title="删除">🗑️</button></div>' +
       '<div class="content"></div>';
     const content = el.querySelector(".content");
     content.textContent = text || "";
@@ -3437,6 +2810,7 @@ function appendMessage(role, text, typing = false, extra = {}) {
     el.querySelector('[data-op="copy"]').onclick = () =>
       copyText(content.dataset.raw || content.textContent);
     el.querySelector('[data-op="edit"]').onclick = () => startEdit(el, content);
+    el.querySelector('[data-op="del"]').onclick = () => deleteMessageBubble(el);
   }
 
   $("#messages").appendChild(el);
