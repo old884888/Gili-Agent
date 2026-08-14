@@ -1830,6 +1830,75 @@ async function editPlanField(field, value) {
   }
 }
 
+// ---------- 自定义下拉（替代原生 select 的丑样式，配弹层动画） ----------
+const _styledSelects = new Set();
+
+function setupSelect(sel) {
+  if (!sel || _styledSelects.has(sel)) return;
+  _styledSelects.add(sel);
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "dd-btn";
+  const panel = document.createElement("div");
+  panel.className = "dd-panel";
+
+  const sync = () => {
+    const opt = [...sel.options].find((o) => o.value === sel.value) || sel.options[0];
+    btn.innerHTML =
+      '<span class="dd-val">' + esc(opt ? opt.textContent : "—") + '</span>' +
+      '<span class="dd-chevron">▾</span>';
+  };
+  const close = () => {
+    panel.classList.remove("open");
+    btn.classList.remove("open");
+    document.removeEventListener("click", onDoc, true);
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onDoc = (e) => {
+    if (!panel.contains(e.target) && e.target !== btn) close();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") close();
+  };
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    if (panel.classList.contains("open")) { close(); return; }
+    panel.classList.add("open");
+    btn.classList.add("open");
+    document.addEventListener("click", onDoc, true);
+    document.addEventListener("keydown", onKey, true);
+    panel.querySelectorAll(".dd-opt").forEach((o) =>
+      o.classList.toggle("active", o.dataset.v === sel.value)
+    );
+    if (window.GiliUI) GiliUI.pop(btn);
+  };
+  panel.innerHTML = [...sel.options]
+    .map((o) => '<button type="button" class="dd-opt" data-v="' + esc(o.value) + '">' + esc(o.textContent) + "</button>")
+    .join("");
+  panel.addEventListener("click", (e) => {
+    const opt = e.target.closest(".dd-opt");
+    if (!opt) return;
+    sel.value = opt.dataset.v;
+    sel.dispatchEvent(new Event("change"));
+    sync();
+    close();
+  });
+  sel.addEventListener("change", sync);
+  sel.classList.add("dd-native");
+  const wrap = document.createElement("div");
+  wrap.className = "dd-wrap";
+  wrap.appendChild(btn);
+  wrap.appendChild(panel);
+  sel.after(wrap);
+  sync();
+}
+
+function initSelects() {
+  ["sel-model", "in-effort", "in-context-preset", "in-defmodel", "in-search-provider", "in-font-size"]
+    .forEach((id) => setupSelect($("#" + id)));
+}
+
 $("#btn-learning").onclick = enterLearningMode;
 $("#btn-learning-docs").onclick = () => { loadLearningProjects().then(openLearningCenter); };
 
@@ -1860,6 +1929,7 @@ async function init() {
   updateEmptyState();
   setSendState();
   restoreParams();
+  initSelects();
 
   // 会话列表优先级最高
   await loadConversations();

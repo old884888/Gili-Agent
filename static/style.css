@@ -268,6 +268,7 @@ h3:first-child { margin-top: 0; }
 .msg-ops button {
   background: transparent; border: none; color: var(--dim);
   font-size: calc(10px * var(--fs)); padding: 2px 6px; cursor: pointer; border-radius: 6px;
+  white-space: nowrap; flex-shrink: 0; min-width: 22px;
 }
 .msg-ops button:hover { background: var(--bg3); color: var(--text); }
 .msg .content, .msg .reasoning { user-select: text; -webkit-user-select: text; }
@@ -879,6 +880,77 @@ select:focus { outline: none; border-color: var(--accent); }
 .opt-chip:hover:not(:disabled) { background: var(--accent); color: #fff; }
 .opt-chip:disabled { opacity: 0.45; cursor: default; }
 
+/* ---------- 自定义下拉（替代原生 select） ---------- */
+select.dd-native { display: none !important; }
+.dd-wrap { position: relative; display: flex; flex: 1.4; min-width: 0; }
+.dd-wrap .dd-btn { flex: 1; min-width: 0; }
+.dd-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid var(--stroke);
+  border-radius: 9px;
+  padding: 5px 10px;
+  color: var(--text);
+  font-size: calc(12px * var(--fs));
+  font-family: inherit;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.dd-btn:hover { border-color: rgba(91, 140, 255, 0.45); background: rgba(255, 255, 255, 0.08); }
+.dd-btn.open { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.2); }
+.dd-val {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: left;
+}
+.dd-chevron { font-size: calc(9px * var(--fs)); opacity: 0.7; transition: transform 0.18s ease; }
+.dd-btn.open .dd-chevron { transform: rotate(180deg); }
+.dd-panel {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 60;
+  width: max-content;
+  min-width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgba(23, 28, 43, 0.97);
+  border: 1px solid var(--stroke);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 14px 36px rgba(2, 6, 16, 0.55);
+  opacity: 0;
+  transform: translateY(-5px) scale(0.97);
+  pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s cubic-bezier(0.2, 0.8, 0.25, 1);
+}
+.dd-panel.open {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.dd-opt {
+  display: block; width: 100%;
+  text-align: left;
+  background: transparent; border: none; border-radius: 8px;
+  color: var(--text);
+  font-size: calc(12px * var(--fs));
+  font-family: inherit;
+  padding: 7px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease;
+}
+.dd-opt:hover { background: rgba(255, 255, 255, 0.08); }
+.dd-opt.active { background: rgba(91, 140, 255, 0.16); color: #fff; }
+/* 下拉面板若超出弹窗底部则上翻 */
+.dd-panel.open { max-height: 260px; overflow-y: auto; }
+
 /* 学习引导确认摘要卡片（可点改字段） */
 .plan-card { flex-direction: column; align-items: stretch; gap: 6px; }
 .plan-field { display: flex; align-items: center; gap: 10px; }
@@ -1148,6 +1220,7 @@ input[type="text"]:focus, input[type="password"]:focus, textarea:focus, select:f
 .conv-list { padding: 4px 3px 8px; }
 .conv-item {
   padding: 10px 12px;
+  overflow: hidden;
   border-radius: 14px;
   border: 1px solid transparent;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0.012));
@@ -1318,17 +1391,18 @@ input[type="text"]:focus, input[type="password"]:focus, textarea:focus, select:f
 
 .reasoning-wrap { margin: 2px 0 9px; }
 .reasoning-toggle {
-  display: inline-flex; align-items: center; gap: 7px;
-  background: rgba(91, 140, 255, 0.08);
-  border: 1px solid rgba(91, 140, 255, 0.2);
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(91, 140, 255, 0.05);
+  border: 1px solid rgba(91, 140, 255, 0.14);
   color: var(--dim);
   border-radius: 20px;
-  padding: 4px 11px;
-  font-size: calc(11px * var(--fs));
+  padding: 2px 9px;
+  font-size: calc(10px * var(--fs));
   cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  opacity: 0.78;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
 }
-.reasoning-toggle:hover { color: var(--text); border-color: rgba(91, 140, 255, 0.45); }
+.reasoning-toggle:hover { color: var(--text); border-color: rgba(91, 140, 255, 0.45); opacity: 1; }
 .pulse-dot {
   position: relative;
   width: 7px; height: 7px; border-radius: 50%;
@@ -2238,7 +2312,10 @@ body.col-resizing {
   margin: -4px 0 12px;
 }
 #settings-modal textarea { min-height: 300px; }
-#settings-modal .field select { flex: 1.4; width: auto; }
+#settings-modal .field select { flex: 1.4; width: auto; min-width: 0; max-width: 100%; }
+#settings-modal .field { min-width: 0; }
+#settings-modal .field label { flex-shrink: 0; white-space: nowrap; }
+#settings-modal .field input[type="password"], #settings-modal .field input[type="text"] { min-width: 0; }
 .settings-foot {
   display: flex;
   justify-content: flex-end;
@@ -2251,6 +2328,7 @@ body.col-resizing {
 
 /* ---------- 更多技能市场 ---------- */
 
+.market-tools { margin-bottom: 18px; }
 .market-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));

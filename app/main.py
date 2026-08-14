@@ -676,6 +676,12 @@ async def chat(req: ChatRequest):
                         conversation_id=cid,
                     )
                 if r1["tool_calls"]:
+                    # 探测轮的思考先输出（模型在思考"要不要搜索"）——
+                    # 修复：搜索技能开启时思考发生在非流式探测轮，不输出则思考链消失
+                    if r1.get("reasoning_content"):
+                        reasoning_text = r1["reasoning_content"]
+                        for ch in _chunks(reasoning_text, 16):
+                            yield _sse({"event": "delta", "kind": "reasoning", "text": ch})
                     # 工具结果进【波动区】尾部（缓存只保住它之前的前缀）
                     tool_msgs = [{
                         "role": "assistant",
@@ -722,9 +728,14 @@ async def chat(req: ChatRequest):
                         })
                     msgs_for_llm = [*msgs_for_llm, *tool_msgs]
                 else:
-                    # 没触发工具：探测轮内容就是答案（分块补流式观感），不再二次调用
+                    # 没触发工具：探测轮内容就是答案（分块补流式观感），不再二次调用；
+                    # 探测轮的思考同样输出（修复思考链消失）
                     raw = r1["content"]
                     needs_stream = False
+                    if r1.get("reasoning_content"):
+                        reasoning_text = r1["reasoning_content"]
+                        for ch in _chunks(reasoning_text, 16):
+                            yield _sse({"event": "delta", "kind": "reasoning", "text": ch})
                     for ch in _chunks(raw):
                         yield _sse({"event": "delta", "kind": "content", "text": ch})
 
