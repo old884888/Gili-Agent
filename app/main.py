@@ -11,6 +11,7 @@ v0.5（核心阶段）：
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -78,6 +79,9 @@ log.info("Gili Agent 启动 v0.15.2 mode=%s", "real" if _s.get("api_key") else "
 
 # 会话级前缀指纹：指纹变化 = 缓存失效（该请求的日志打标）
 _prefix_fps: dict[str, str] = {}
+
+# 最近一次路由消息快照（cid → (messages, model)）：供后台摘要请求复用 warm 前缀
+_last_routed: dict[str, tuple[list[dict], str]] = {}
 
 
 def _sse(obj: dict) -> str:
@@ -316,6 +320,7 @@ async def auto_title(cid: str):
 async def delete_conversation(cid: str):
     db.delete_conversation(cid)
     _prefix_fps.pop(cid, None)  # 清除前缀指纹，避免孤儿状态
+    _last_routed.pop(cid, None)  # 清除路由快照
     learning_skill.forget(cid)  # 清除学习引导等会话级内存态
     return {"status": "ok"}
 
@@ -611,15 +616,19 @@ async def chat(req: ChatRequest):
         # 知识引用挂绝对尾部（当前消息之后）：插中间会破坏下一轮的前缀命中
         messages.append({"role": "system", "content": knowledge.context_block(kb_sources)})
 
-    # 前缀守卫：指纹变化（技能切换/摘要重写/记忆编辑）或历史裁剪 = 缓存失效
+    # 前缀守卫（DSH 信封哈希）：稳定+低频 + model + tools 任一变化 = 缓存时代切换。
+    # model 纳入是因为缓存域是 provider×model 级（v4-flash ↔ v4-pro 不共享缓存）。
+    fp = hashlib.sha256(
+        (fp + "|" + req.params.model + "|" + json.dumps(tools, sort_keys=True, ensure_ascii=False)).encode("utf-8")
+    ).hexdigest()
     prev_fp = _prefix_fps.get(cid)
     cache_invalidated = (prev_fp is not None and prev_fp != fp) or history_trimmed
     _prefix_fps[cid] = fp
 
-    # 联网技能开启 → 附带工具定义（稳定区，随请求发送）
+    # 联网技能开启 → 附带工具定义（稳定信封，随请求发送）；按名字稳定排序（DSH 纪律）
     tools: list[dict] = []
     if any(s["id"] == "search" for s in skills.enabled_skills(settings)):
-        tools = [WEB_SEARCH_TOOL]
+        tools = sorted([WEB_SEARCH_TOOL], key=lambda t: t["function"]["name"])
 
     log.info("[chat] 开始 cid=%s model=%s regen=%s search=%s", cid, req.params.model, bool(regen), bool(tools))
 
@@ -693,6 +702,9 @@ async def chat(req: ChatRequest):
                     needs_stream = False
                     for ch in _chunks(raw):
                         yield _sse({"event": "delta", "kind": "content", "text": ch})
+
+            # 保存本次实际路由的消息快照：后台摘要任务复用它做 prefix-extension（DSH 实践）
+            _last_routed[cid] = (list(msgs_for_llm), req.params.model)
 
             if needs_stream:
                 async for evt in provider.stream_chat(msgs_for_llm, req.params):
@@ -797,7 +809,7 @@ async def chat(req: ChatRequest):
         ):
             async def _safe_summarize():
                 try:
-                    await memory.summarize_conversation(cid, provider, keep_window)
+                    await memory.summarize_conversation(cid, provider, keep_window, prefix=_last_routed.get(cid))
                 except Exception as e:  # noqa: BLE001 —— 后台任务异常不打断主流程
                     log.exception("[auto-summarize] %s: %s", type(e).__name__, e)
 
@@ -902,8 +914,8 @@ async def summarize_memory(body: dict | None = None):
         cid = convs[0]["id"] if convs else None
     if not cid:
         return {"status": "ok", "cache_invalidated": False, "detail": "还没有对话可压缩"}
-    # 手动按钮 = 强制压缩：只保留最近 2 条，其余全压
-    text = await memory.summarize_conversation(cid, provider, force=True)
+    # 手动按钮 = 强制压缩：只保留最近 2 条，其余全压（复用路由快照的 warm 前缀）
+    text = await memory.summarize_conversation(cid, provider, force=True, prefix=_last_routed.get(cid))
     if not text:
         return {
             "status": "ok",

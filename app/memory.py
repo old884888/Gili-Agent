@@ -246,13 +246,18 @@ def should_summarize(cid: str, threshold: int) -> bool:
 
 
 async def summarize_conversation(
-    cid: str, provider, keep_window: int = DEFAULT_KEEP_WINDOW_TOKENS, force: bool = False
+    cid: str,
+    provider,
+    keep_window: int = DEFAULT_KEEP_WINDOW_TOKENS,
+    force: bool = False,
+    prefix: tuple[list[dict], str] | None = None,
 ) -> str | None:
     """压缩对话：尾部留工作窗口，其余 LLM 摘要 → 标记 summarized → 写摘要。
 
     force=False（自动触发）：保留尾部 keep_window token 原文，只压更旧的
     （keep_window 由调用方按预算 × 0.35 计算，预算越大保留越多）；
     force=True（手动按钮）：只保留最近 2 条，其余全部压缩 —— 点了就有反馈。
+    prefix：最近一次路由的消息快照（复用 warm 缓存前缀，DSH 实践）；缺省走独立 prompt。
     返回摘要文本；无内容可压缩时返回 None。
     """
     msgs = db.get_messages(cid, summarized=0)
@@ -277,7 +282,7 @@ async def summarize_conversation(
     transcript = "\n".join(
         f"{'用户' if m['role'] == 'user' else 'Gili'}：{m['content']}" for m in old
     )
-    summary_text = await _llm_summarize(provider, transcript)
+    summary_text = await _llm_summarize(provider, transcript, prefix=prefix)
     if not summary_text:
         return None
 
@@ -286,20 +291,35 @@ async def summarize_conversation(
     return summary_text
 
 
-async def _llm_summarize(provider, transcript: str) -> str:
-    """用 LLM 压缩对话（思考关闭 + 低温，保证确定性输出）。"""
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是记忆整理器。把用户的对话压缩成中文摘要（150-300 字），"
-                "保留：用户偏好、重要事实、做出的决定、未完成的事。"
-                "只输出摘要正文，不要任何解释。"
-            ),
-        },
-        {"role": "user", "content": transcript[:12000]},
-    ]
-    params = ChatParams(thinking_enabled=False, temperature=0.0, max_tokens=600)
+async def _llm_summarize(provider, transcript: str, prefix: tuple[list[dict], str] | None = None) -> str:
+    """用 LLM 压缩对话（思考关闭 + 低温，保证确定性输出）。
+
+    prefix 提供时（DSH 实践：辅助请求 = 主请求的 prefix-extension）：
+    原样 replay 最近一次路由的 messages（逐字节一致），压缩指令作为最后一条
+    user 消息追加，并使用与路由相同的 model（缓存域一致）→ 复用 warm 前缀缓存；
+    否则退回独立 prompt（正确性优先，缓存次之）。
+    """
+    instruction = (
+        "你现在是记忆整理器。把【上面的对话】压缩成一份中文滚动摘要（150-300 字），"
+        "保留：用户偏好、重要事实、做出的决定、未完成的事。"
+        "只输出摘要正文本身，不要任何前后缀，不要提及这个压缩请求。"
+    )
+    if prefix and prefix[0]:
+        messages = [*prefix[0], {"role": "user", "content": instruction}]
+        params = ChatParams(model=prefix[1], thinking_enabled=False, temperature=0.0, max_tokens=600)
+    else:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是记忆整理器。把用户的对话压缩成中文摘要（150-300 字），"
+                    "保留：用户偏好、重要事实、做出的决定、未完成的事。"
+                    "只输出摘要正文，不要任何解释。"
+                ),
+            },
+            {"role": "user", "content": transcript[:12000]},
+        ]
+        params = ChatParams(thinking_enabled=False, temperature=0.0, max_tokens=600)
     chunks = []
     async for evt in provider.stream_chat(messages, params):
         if evt["kind"] == "content":

@@ -66,8 +66,8 @@ DSH：cacheHitRate = cacheRead / (input + cacheRead + cacheWrite)（缓存写也
 | DSH 设计 | Gili 现状 | 结论 |
 |---|---|---|
 | append-only 尾部（动态内容挂绝对尾部） | ❌ 插在历史与 current 之间 | **✅ 本次修复（根因）** |
-| 会话冻结前缀（system+技能+工具） | ✅ 稳定区 + 前缀指纹守卫 | 已有；P2 可扩充固定 few-shot 增大命中基数 |
-| 辅助请求 prefix-extension（指令尾部化） | ❌ 辅助调用全是独立 prompt | P2：起标题/建议可复用主前缀；摘要成本高暂缓 |
+| 会话冻结前缀（system+技能+工具） | ✅ 稳定区 + 前缀指纹守卫 | 已有；**✅ 指纹已升级为信封哈希**（稳定+低频 + model + tools 排序后 JSON）——换模型/换工具集 = 缓存时代切换，自动记账 |
+| 辅助请求 prefix-extension（指令尾部化） | ❌ 辅助调用全是独立 prompt | **✅ 摘要已实施**（路由快照 replay + 指令尾部化 + 同 model）；起标题/建议 P2 |
 | 请求=日志纯函数 | ✅ 指纹+确定性序列化 | 已有（修复后完整成立） |
 | 缓存写也计费（hit rate 口径） | ✅ hit/(hit+miss) | 等价，无需改 |
 
@@ -100,6 +100,14 @@ DSH：cacheHitRate = cacheRead / (input + cacheRead + cacheWrite)（缓存写也
 5. **缓存域是 provider×model 级**：v4-flash 与 v4-pro 不共享缓存；切换模型后首个请求必然 miss。
 
 6. **压缩阈值参考**（记录在案）：DSH 用 0.8×上下文触发、保留 0.16 尾部、裁最老整段、边界对齐闭合工具对；我们现用预算×0.35 保留窗口，个人场景够用，不迁移。
+
+## 5.6 本轮追加实施（信封哈希 / 摘要 prefix-extension，2026-08-14 二批）
+
+1. **信封哈希**：前缀指纹从「稳定+低频 SHA-256」升级为「稳定+低频 + model + tools（按名稳定排序后 JSON）」。原因：缓存域是 provider×model 级，换模型必须记账失效；tools 集合变化同理。容量参数（history_token_budget）按 DSH 纪律不进信封（容量不是请求内容，且裁剪由 history_trimmed 单独记账）。
+
+2. **摘要请求复用 warm 前缀**（DSH 报告"投入产出比最高"项）：event_stream 把每次实际路由的 messages+model 存为会话快照 `_last_routed`；后台摘要任务 replay 该快照（逐字节一致）+ 末尾追加一条压缩指令 user 消息 + 使用同 model → 摘要请求成为主请求的 prefix-extension，命中刚热好的缓存。无快照时退回独立 prompt（正确性优先）。单测验证：前缀逐字节一致、指令尾部化、同 model、fallback 正常。
+
+3. **tools 稳定排序**：按 function.name 字典序（当前仅 web_search，未来加工具不漂移）。
 
 ## 6. 后续候选（P2）
 
