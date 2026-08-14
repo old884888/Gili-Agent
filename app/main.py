@@ -630,6 +630,11 @@ async def chat(req: ChatRequest):
         # 知识引用挂绝对尾部（当前消息之后）：插中间会破坏下一轮的前缀命中
         messages.append({"role": "system", "content": knowledge.context_block(kb_sources)})
 
+    # 联网技能开启 → 附带工具定义（稳定信封，随请求发送）；按名字稳定排序（DSH 纪律）
+    tools: list[dict] = []
+    if any(s["id"] == "search" for s in skills.enabled_skills(settings)):
+        tools = sorted([WEB_SEARCH_TOOL, WEB_FETCH_TOOL], key=lambda t: t["function"]["name"])
+
     # 前缀守卫（DSH 信封哈希）：稳定+低频 + model + tools 任一变化 = 缓存时代切换。
     # model 纳入是因为缓存域是 provider×model 级（v4-flash ↔ v4-pro 不共享缓存）。
     fp = hashlib.sha256(
@@ -638,11 +643,6 @@ async def chat(req: ChatRequest):
     prev_fp = _prefix_fps.get(cid)
     cache_invalidated = (prev_fp is not None and prev_fp != fp) or history_trimmed
     _prefix_fps[cid] = fp
-
-    # 联网技能开启 → 附带工具定义（稳定信封，随请求发送）；按名字稳定排序（DSH 纪律）
-    tools: list[dict] = []
-    if any(s["id"] == "search" for s in skills.enabled_skills(settings)):
-        tools = sorted([WEB_SEARCH_TOOL, WEB_FETCH_TOOL], key=lambda t: t["function"]["name"])
 
     log.info("[chat] 开始 cid=%s model=%s regen=%s search=%s", cid, req.params.model, bool(regen), bool(tools))
 
