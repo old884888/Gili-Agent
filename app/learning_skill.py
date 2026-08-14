@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from .schemas import ChatParams
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 NOTES_DIR = BASE_DIR / "notes"
+KB_DIR = NOTES_DIR / "知识库"  # 跨学科知识库（全局可检索，Obsidian 可打开）
 
 # 第一问（固定主题，允许完全自由输入）+ 快捷学科
 FIRST_QUESTION = {
@@ -871,6 +873,91 @@ def handle_update_answer(cid: str, text: str) -> dict:
     return _finish_chapter_update(pending, chapter, extra_note)
 
 
+# ---------- 笔记 AI 整理（版本化 + 历史备份） ----------
+
+async def organize_project_notes(pid: str, provider) -> dict:
+    """把零散笔记整理成结构化「笔记整理.md」；旧稿自动备份到 .history/（保留 5 份）。"""
+    project = db.get_learning_project(pid)
+    if not project:
+        raise ValueError("项目不存在")
+    if getattr(provider, "name", "") != "deepseek":
+        raise ValueError("整理笔记需要先配置 DeepSeek API Key")
+    pdir = NOTES_DIR / pid
+    pdir.mkdir(parents=True, exist_ok=True)
+
+    raw_parts: list[str] = []
+    fpath = pdir / "笔记.md"
+    try:
+        if fpath.exists():
+            raw_parts.append(fpath.read_text(encoding="utf-8")[:6000])
+    except OSError:
+        pass
+    for ch in db.list_learning_chapters(pid):
+        if ch.get("note"):
+            raw_parts.append(f"## 第 {ch['order_no']} 章 {ch['title']} 的笔记\n{ch['note'][:1500]}")
+    organized_path = pdir / "笔记整理.md"
+    old_organized = ""
+    try:
+        if organized_path.exists():
+            old_organized = organized_path.read_text(encoding="utf-8")[:4000]
+    except OSError:
+        pass
+    if not raw_parts and not old_organized:
+        raise ValueError("还没有笔记可整理：先用「记一下：xxx」写几条，或先整理完一章再来")
+
+    prompt = (
+        "你是学习笔记整理师。把零散笔记整理成一份结构化学习笔记（markdown）：\n"
+        "要求：按主题分小节；要点式；保留所有具体细节/代码/数字；不编造；"
+        "末尾附「## 待办与疑问」汇总笔记中遗留的问题。\n"
+        f"学习项目：{project.get('subject', '')}（真实目标：{project.get('goal') or '无'}）\n\n"
+        f"【已有整理稿（在其基础上增补修订，保留仍有效的内容）】\n{old_organized}\n\n"
+        f"【新增零散笔记】\n" + "\n\n".join(raw_parts)
+    )
+    params = ChatParams(thinking_enabled=False, temperature=0.3, max_tokens=4000)
+    chunks: list[str] = []
+    async for evt in provider.stream_chat([{"role": "system", "content": prompt}], params):
+        if evt["kind"] == "content":
+            chunks.append(evt["text"])
+    content = "".join(chunks).strip()
+    if not content:
+        raise ValueError("整理失败（模型返回为空），请重试")
+
+    # 历史备份（旧稿 → .history/笔记整理.v{n}.md，保留最近 5 份）
+    hist_dir = pdir / ".history"
+    hist_dir.mkdir(parents=True, exist_ok=True)
+    if organized_path.exists():
+        version = max(db.get_note_version(pid, "笔记整理.md"), 1)  # 备份的是当前版本，用当前版本号命名
+        shutil.move(str(organized_path), str(hist_dir / f"笔记整理.v{version}.md"))
+        olds = sorted(hist_dir.glob("笔记整理.v*.md"))
+        for old in olds[:-5]:
+            old.unlink(missing_ok=True)
+    organized_path.write_text(content + "\n", encoding="utf-8")
+    db.touch_note_meta(pid, "笔记整理.md")
+    knowledge.reindex_project(pid)
+    return {
+        "status": "ok",
+        "content": "✅ 笔记已整理成结构化版本：打开 📖 学习文档 →「整理」Tab 查看。原文笔记与历史版本都保留。",
+    }
+
+
+def rollback_organized(pid: str) -> dict:
+    """回退到最近一份历史整理稿（先选历史版，再把当前稿备份进历史）。"""
+    pdir = NOTES_DIR / pid
+    hist_dir = pdir / ".history"
+    olds = sorted(hist_dir.glob("笔记整理.v*.md")) if hist_dir.exists() else []
+    if not olds:
+        raise ValueError("没有可回退的历史版本")
+    newest = olds[-1]  # 上一版（必须在备份当前稿之前选定）
+    organized_path = pdir / "笔记整理.md"
+    if organized_path.exists():
+        version = max(db.get_note_version(pid, "笔记整理.md"), 1)
+        shutil.move(str(organized_path), str(hist_dir / f"笔记整理.v{version}.md"))
+    shutil.move(str(newest), str(organized_path))
+    db.touch_note_meta(pid, "笔记整理.md")
+    knowledge.reindex_project(pid)
+    return {"status": "ok", "content": "⏪ 已回退到上一版整理稿。"}
+
+
 # ---------- 学习对话显式命令 ----------
 
 def handle_command(cid: str, text: str) -> dict | None:
@@ -896,7 +983,43 @@ def handle_command(cid: str, text: str) -> dict | None:
     m = re.match(r"(?:问一下|疑问)\s*[：:]\s*(.+)", t, re.S)
     if m:
         return _add_note_command(project, m.group(1).strip(), kind="question")
+    m = re.match(r"(?:记到|归档到)\s*(.+)$", t, re.S)
+    if m:
+        cm = re.match(r"(.+?)\s*[：:]\s*(.+)", m.group(1), re.S)
+        if cm:
+            return archive_to_kb(cm.group(1).strip(), cm.group(2).strip())
+        return archive_to_kb(m.group(1).strip(), "")  # 只有主题 → 用法提示
+    if re.search(r"^整理(?:\s*笔记)?\s*[：:]?\s*$|^整理这章|^整理笔记", t):
+        return {"status": "ok", "command": "organize", "content": "📝 收到，开始整理笔记…（约 10-30 秒，整理稿会出现在 📖 学习文档的「整理」Tab）"}
     return None
+
+
+def archive_to_kb(topic: str, content: str) -> dict:
+    """跨学科归档：「记到心理学：xxx」→ notes/知识库/<主题>.md，进全局 FTS 检索。"""
+    topic = (topic or "").strip()[:30]
+    content = (content or "").strip()
+    if not topic or not content:
+        return {
+            "status": "error",
+            "command": "archive",
+            "content": "用法：记到主题：内容（例如「记到心理学：锚定效应是指…」）",
+        }
+    KB_DIR.mkdir(parents=True, exist_ok=True)
+    fpath = KB_DIR / f"{topic}.md"
+    try:
+        existing = fpath.read_text(encoding="utf-8") if fpath.exists() else ""
+    except OSError:
+        existing = ""
+    entry = f"- [{_fmt_date()}] {content}"
+    fpath.write_text(existing.rstrip() + "\n" + entry + "\n", encoding="utf-8")
+    db.replace_knowledge_chunks("kb", topic, [{
+        "project_id": None,
+        "conversation_id": None,
+        "title": f"知识库·{topic}",
+        "heading": "",
+        "content": (existing + "\n" + entry)[-4000:],
+    }])
+    return {"status": "ok", "command": "archive", "content": f"📚 已记到「{topic}」知识库（跨学科检索可见，主线不受影响）。"}
 
 
 def _chapter_by_index(project: dict, idx: int) -> dict | None:

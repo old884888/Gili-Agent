@@ -828,6 +828,14 @@ def touch_note_meta(pid: str, filename: str) -> None:
         add_note_meta(pid, filename, filename.removesuffix(".md"))
 
 
+def get_note_version(pid: str, filename: str) -> int:
+    rows = _query(
+        "SELECT version_no FROM learning_notes_meta WHERE project_id=? AND filename=? LIMIT 1",
+        (pid, filename),
+    )
+    return int(rows[0]["version_no"]) if rows else 0
+
+
 def list_note_meta(pid: str) -> list[dict]:
     return _query(
         "SELECT * FROM learning_notes_meta WHERE project_id=? ORDER BY rowid", (pid,)
@@ -998,12 +1006,12 @@ def knowledge_fts_search(
     )
     params: list = [q]
     if project_id:
-        sql += " AND (c.project_id=? OR c.source_type='memory')"
+        sql += " AND (c.project_id=? OR c.source_type IN ('memory','kb'))"
         params.append(project_id)
     else:
-        # 普通对话没有绑定学习项目：只检索记忆，不把其他项目
+        # 普通对话没有绑定学习项目：只检索记忆与全局知识库，不把其他项目
         # 的大纲/笔记/章节/疑问漏进当前对话。
-        sql += " AND c.source_type='memory'"
+        sql += " AND c.source_type IN ('memory','kb')"
     if memory_scope:
         sql += (
             " AND (c.source_type != 'memory' OR c.conversation_id IS NULL OR "
@@ -1033,10 +1041,10 @@ def knowledge_like_search(
         params.extend([like, like])
     sql = "SELECT c.* FROM knowledge_chunks c WHERE (" + " OR ".join(clauses) + ")"
     if project_id:
-        sql += " AND (c.project_id=? OR c.source_type='memory')"
+        sql += " AND (c.project_id=? OR c.source_type IN ('memory','kb'))"
         params.append(project_id)
     else:
-        sql += " AND c.source_type='memory'"
+        sql += " AND c.source_type IN ('memory','kb')"
     if memory_scope:
         sql += (
             " AND (c.source_type != 'memory' OR c.conversation_id IS NULL OR "

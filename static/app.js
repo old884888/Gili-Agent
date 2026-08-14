@@ -337,6 +337,7 @@ function sourceTypeLabel(type) {
     memory: "🧠 记忆",
     chapter: "📚 章节",
     question: "❓ 疑问",
+    kb: "📚 知识库",
   }[type] || "🔗 来源";
 }
 
@@ -2524,6 +2525,7 @@ function renderStudioDetail() {
     ["outline", "大纲"],
     ["progress", "进度"],
     ["notes", "笔记"],
+    ["organized", "整理"],
     ["questions", "疑问"],
   ];
 
@@ -2790,6 +2792,59 @@ function renderStudioPane() {
           `<div class="q-meta">${esc(q.concept || "概念")} · ${esc(q.source_ref || "出处")} · ${fmtTime(q.created_at)}</div></div>`
       )
       .join("");
+    return;
+  }
+
+  if (studioTab === "organized") {
+    const filename = "笔记整理.md";
+    const note = (d.notes || []).find((n) => n.filename === filename);
+    const content = note ? note.content : "";
+    const bar = document.createElement("div");
+    bar.className = "studio-doc-bar";
+    bar.innerHTML =
+      '<button class="btn small" id="btn-organize" title="让 AI 把零散笔记整理成结构化版本">🤖 重新整理</button>' +
+      '<button class="btn small" id="btn-organize-rollback" title="回退到上一版整理稿">⏪ 回退</button>' +
+      (note && note.version_no ? `<span class="doc-ver">v${note.version_no}</span>` : "");
+    host.appendChild(bar);
+    bar.querySelector("#btn-organize").onclick = async () => {
+      const btn = bar.querySelector("#btn-organize");
+      btn.disabled = true;
+      btn.textContent = "🤖 整理中…（10-30 秒）";
+      try {
+        const r = await api(`/api/learning/projects/${studioDetail.project.id}/organize`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        toast(r.content || "整理完成");
+        await refreshStudioDetail();
+      } catch (e) {
+        toast("整理失败: " + e.message);
+        btn.disabled = false;
+        btn.textContent = "🤖 重新整理";
+      }
+    };
+    bar.querySelector("#btn-organize-rollback").onclick = async () => {
+      if (!confirm("回退到上一版整理稿？（当前稿会保留在历史里）")) return;
+      try {
+        const r = await api(`/api/learning/projects/${studioDetail.project.id}/organize/rollback`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        toast(r.content || "已回退");
+        await refreshStudioDetail();
+      } catch (e) {
+        toast("回退失败: " + e.message);
+      }
+    };
+    const doc = document.createElement("div");
+    doc.className = "studio-doc";
+    if (content) {
+      renderMessageContent(doc, content);
+    } else {
+      doc.innerHTML =
+        '<div class="studio-hint">还没有整理稿。在对话里说「整理笔记」，或点上方 🤖 重新整理（需要先有一些笔记）。</div>';
+    }
+    host.appendChild(doc);
     return;
   }
 

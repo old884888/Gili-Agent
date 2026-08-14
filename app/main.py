@@ -518,6 +518,20 @@ async def chat(req: ChatRequest):
             db.add_message(cid, "user", req.message)
             db.add_message(cid, "assistant", command["content"])
             db.touch(cid)
+            if command.get("command") == "organize":
+                project = db.get_learning_project_by_conv(cid)
+                if project:
+
+                    async def _safe_organize():
+                        try:
+                            result = await learning_skill.organize_project_notes(project["id"], provider)
+                            db.add_message(cid, "assistant", result["content"])
+                        except Exception as e:  # noqa: BLE001
+                            log.exception("[organize] %s: %s", type(e).__name__, e)
+                            db.add_message(cid, "assistant", f"⚠️ 整理失败：{e}（笔记原文未受影响，可直接重试）")
+                        db.touch(cid)
+
+                    asyncio.create_task(_safe_organize())
             return JSONResponse({
                 "mode": "learning_command",
                 "status": command.get("status", "ok"),
@@ -1208,6 +1222,33 @@ async def start_chapter(chapter_id: str):
         )
         db.touch(project["conversation_id"])
     return {"status": "ok", "chapter_index": idx, "title": chapter["title"]}
+
+
+@app.post("/api/learning/projects/{pid}/organize")
+async def organize_notes(pid: str, body: dict | None = None):
+    """工作室「整理」Tab：同步触发 AI 整理（阻塞约 10-30 秒）。"""
+    project = db.get_learning_project(pid)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    settings = config.load()
+    provider = llm.make_provider(settings)
+    try:
+        result = await learning_skill.organize_project_notes(pid, provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@app.post("/api/learning/projects/{pid}/organize/rollback")
+async def rollback_organized_notes(pid: str):
+    """回退到最近一份历史整理稿。"""
+    project = db.get_learning_project(pid)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    try:
+        return learning_skill.rollback_organized(pid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/learning/projects/{pid}/notes")

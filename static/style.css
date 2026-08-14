@@ -1810,6 +1810,8 @@ input[type="text"]:focus, input[type="password"]:focus, textarea:focus, select:f
 .ch-obj { font-size: calc(12px * var(--fs)); color: var(--dim); margin-top: 3px; line-height: 1.5; }
 
 /* 文档渲染 */
+.studio-doc-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.doc-ver { font-size: calc(11px * var(--fs)); color: var(--dim); }
 .studio-doc { font-size: calc(13px * var(--fs)); line-height: 1.7; }
 .studio-doc.md p { margin: 7px 0; }
 .studio-doc.md h1 { font-size: 1.45em; margin: 14px 0 8px; }
