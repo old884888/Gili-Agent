@@ -90,8 +90,12 @@ def build_prompt(
         json.dumps(stable + lowfreq, ensure_ascii=False).encode("utf-8")
     ).hexdigest()
 
-    # 波动区：环境信息 → 检索记忆 → 当前消息（全在尾部，缓存友好）
-    tail: list[dict] = []
+    # 波动区（append-only 尾部，复刻 DSH 原则）：当前消息紧跟历史——
+    # 下一轮的前缀 = 本轮除尾部外的全部内容，逐轮命中；
+    # 环境信息/检索记忆这类每轮变的内容挂【绝对尾部】（当前消息之后），
+    # 绝不插在历史与当前消息之间——插中间会让下一轮的新历史占据该位置，前缀链断裂
+    #（实测证据：修复前 hit 恒为稳定区 384-512，历史区从不命中）。
+    tail: list[dict] = [current]
     if volatile_text:
         tail.append({"role": "system", "content": f"（环境信息）{volatile_text}"})
     if retrieved:
@@ -101,6 +105,5 @@ def build_prompt(
                 "content": "【相关记忆】\n" + "\n".join(f"- {f['content']}" for f in retrieved),
             }
         )
-    tail.append(current)
 
     return [*stable, *lowfreq, *history, *tail], fp

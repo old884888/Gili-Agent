@@ -608,10 +608,8 @@ async def chat(req: ChatRequest):
         lowfreq_text=learning_overview,
     )
     if kb_sources:
-        messages.insert(
-            len(messages) - 1,
-            {"role": "system", "content": knowledge.context_block(kb_sources)},
-        )
+        # 知识引用挂绝对尾部（当前消息之后）：插中间会破坏下一轮的前缀命中
+        messages.append({"role": "system", "content": knowledge.context_block(kb_sources)})
 
     # 前缀守卫：指纹变化（技能切换/摘要重写/记忆编辑）或历史裁剪 = 缓存失效
     prev_fp = _prefix_fps.get(cid)
