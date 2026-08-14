@@ -109,6 +109,14 @@ DSH：cacheHitRate = cacheRead / (input + cacheRead + cacheWrite)（缓存写也
 
 3. **tools 稳定排序**：按 function.name 字典序（当前仅 web_search，未来加工具不漂移）。
 
+## 5.7 真实 AI 综合回归（2026-08-14 三批，全部通过）
+
+8 轮同会话对话（v4-flash，思考关）：命中率 92% / 83% / 77% / 95% / 89% / 84% / 79% / 93%（均值 **86.5%**），hit 逐轮 384 → 512 → 640 持续累积——前缀链完全打通。
+
+摘要请求复用 warm 前缀（二批实现）：hit=640 miss=99 → **86.6% 命中**，DSH 模式复刻成功（修复前独立 prompt 每次全 miss）。
+
+顺带回归：动态问数一句话即确认（plan 抽取完整：subject/level_from/goal 全对）；思考模式+工具轮回传 reasoning_content 正常；笔记整理真实 LLM 生成成功。
+
 ## 6. 后续候选（P2）
 
 1. **稳定区扩充**：把固定 few-shot / 回答格式约定并入稳定区（增大命中基数，顺带提升回复质量）
