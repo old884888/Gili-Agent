@@ -24,7 +24,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, knowledge, learning_skill, llm, log as logmod, memory, metrics, prompt_builder, search, skills, skills_market
+from . import config, db, knowledge, learning_skill, llm, log as logmod, memory, metrics, persona, prompt_builder, search, skills, skills_market
 from .schemas import ChatParams, ChatRequest, MemoryItem
 
 # 联网搜索工具定义（进稳定区：开启技能时随请求发送，顺序固定）
@@ -160,6 +160,7 @@ async def get_settings():
         **s,
         "api_key": config.mask_key(s.get("api_key", "")),
         "tavily_api_key": config.mask_key(s.get("tavily_api_key", "")),
+        "persona_api_key": config.mask_key(s.get("persona_api_key", "")),
     }
 
 
@@ -879,6 +880,19 @@ async def chat(req: ChatRequest):
                     log.exception("[auto-title] %s: %s", type(e).__name__, e)
 
             asyncio.create_task(_safe_title())
+        # 人格画像：每 20 轮后台分析（默认关闭，开启后自动触发）
+        if not regen and provider.name == "deepseek":
+            async def _safe_persona():
+                try:
+                    turns = persona.count_turn(cid)
+                    if turns and turns % persona.INTERVAL == 0:
+                        snap = await persona.analyze(cid, settings)
+                        if snap:
+                            log.info("[persona] %s 第 %s 轮画像快照完成", cid, turns)
+                except Exception as e:  # noqa: BLE001
+                    log.exception("[persona] %s: %s", type(e).__name__, e)
+
+            asyncio.create_task(_safe_persona())
         # 海马体：每 EXTRACT_INTERVAL 轮批量抽取事实（批量写 = 低频区少变）
         if provider.name == "deepseek" and db.count_unextracted_user_messages(cid) >= memory.EXTRACT_INTERVAL:
             async def _safe_extract():
@@ -1038,6 +1052,37 @@ def _update_summary_message(cid: str, st: dict) -> None:
             "placeholder": "",
         }, ensure_ascii=False),
     )
+
+
+# ---------- 人格画像（默认关闭，会话独立，每 20 轮分析） ----------
+
+@app.get("/api/persona/{cid}")
+async def persona_view(cid: str):
+    if not db.get_conversation(cid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return persona.state_view(cid)
+
+
+@app.post("/api/persona/{cid}/toggle")
+async def persona_toggle(cid: str, body: dict):
+    if not db.get_conversation(cid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    enabled = bool(body.get("enabled"))
+    return persona.toggle(cid, enabled)
+
+
+@app.post("/api/persona/{cid}/analyze")
+async def persona_analyze(cid: str):
+    """手动触发一次画像分析（调试用；自动节奏是每 20 轮）。"""
+    if not db.get_conversation(cid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if not (db.get_persona_state(cid) or {}).get("enabled"):
+        raise HTTPException(status_code=400, detail="画像未开启：先打开开关")
+    settings = config.load()
+    snap = await persona.analyze(cid, settings)
+    if not snap:
+        raise HTTPException(status_code=400, detail="分析失败（详见日志），请重试或检查画像模型配置")
+    return {"status": "ok", "snapshot": snap}
 
 
 # ---------- 学习模式（AI 决策式引导，引导消息直接落库到对话） ----------

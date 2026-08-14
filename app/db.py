@@ -130,6 +130,23 @@ _SCHEMA: list[str] = [
         state TEXT NOT NULL,
         updated_at TEXT
     )""",
+    """CREATE TABLE IF NOT EXISTS persona_snapshots (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT,
+        turn_no INTEGER,
+        dims TEXT NOT NULL,
+        evidence TEXT DEFAULT '[]',
+        summary TEXT DEFAULT '',
+        model TEXT DEFAULT '',
+        created_at TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS persona_state (
+        conversation_id TEXT PRIMARY KEY,
+        enabled INTEGER DEFAULT 0,
+        user_turns INTEGER DEFAULT 0,
+        updated_at TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_persona_snapshots ON persona_snapshots(conversation_id, turn_no)",
 ]
 
 
@@ -355,6 +372,8 @@ def delete_conversation(cid: str) -> None:
     _exec("DELETE FROM memory_items WHERE conversation_id=?", (cid,))
     _exec("DELETE FROM knowledge_chunks WHERE conversation_id=?", (cid,))
     _exec("DELETE FROM request_logs WHERE conversation_id=?", (cid,))
+    _exec("DELETE FROM persona_snapshots WHERE conversation_id=?", (cid,))
+    _exec("DELETE FROM persona_state WHERE conversation_id=?", (cid,))
     _exec("DELETE FROM conversations WHERE id=?", (cid,))
     if gid:
         remaining = _query("SELECT COUNT(*) AS n FROM conversations WHERE memory_group=?", (gid,))[0]["n"]
@@ -469,6 +488,69 @@ def load_onboard_state(key: str) -> dict | None:
 
 def delete_onboard_state(key: str) -> None:
     _exec("DELETE FROM learning_onboard WHERE key=?", (key,))
+
+
+# ---------- 人格画像（默认关闭，会话独立） ----------
+
+def set_persona_enabled(cid: str, enabled: bool) -> None:
+    _exec(
+        """INSERT INTO persona_state (conversation_id, enabled, user_turns, updated_at)
+           VALUES (?,?,0,?)
+           ON CONFLICT(conversation_id) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at""",
+        (cid, 1 if enabled else 0, _now()),
+    )
+
+
+def get_persona_state(cid: str) -> dict | None:
+    rows = _query("SELECT * FROM persona_state WHERE conversation_id=?", (cid,))
+    return rows[0] if rows else None
+
+
+def incr_persona_turns(cid: str) -> int:
+    """开启状态下轮数 +1（返回新值；未开启返回 0）。"""
+    state = get_persona_state(cid)
+    if not state or not state.get("enabled"):
+        return 0
+    _exec(
+        "UPDATE persona_state SET user_turns=user_turns+1, updated_at=? WHERE conversation_id=?",
+        (_now(), cid),
+    )
+    return int(state["user_turns"]) + 1
+
+
+def add_persona_snapshot(
+    cid: str, turn_no: int, dims: str, evidence: str, summary: str, model: str
+) -> dict:
+    pid = "ps" + uuid.uuid4().hex[:8]
+    row = {
+        "id": pid,
+        "conversation_id": cid,
+        "turn_no": turn_no,
+        "dims": dims,
+        "evidence": evidence,
+        "summary": summary,
+        "model": model,
+        "created_at": _now(),
+    }
+    _exec(
+        """INSERT INTO persona_snapshots
+           (id, conversation_id, turn_no, dims, evidence, summary, model, created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        tuple(row.values()),
+    )
+    return row
+
+
+def list_persona_snapshots(cid: str) -> list[dict]:
+    return _query(
+        "SELECT * FROM persona_snapshots WHERE conversation_id=? ORDER BY turn_no", (cid,)
+    )
+
+
+def delete_persona(cid: str) -> None:
+    """关闭开关：删除该会话全部画像快照与状态（"关闭就没"）。"""
+    _exec("DELETE FROM persona_snapshots WHERE conversation_id=?", (cid,))
+    _exec("DELETE FROM persona_state WHERE conversation_id=?", (cid,))
 
 
 def deactivate_group(group: str) -> None:

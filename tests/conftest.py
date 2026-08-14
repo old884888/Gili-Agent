@@ -34,8 +34,10 @@ class FakeProvider:
         if not self.responses:
             return {"content": json.dumps({"action": "confirm", "plan": {}}, ensure_ascii=False),
                     "tool_calls": [], "usage": {}, "reasoning_content": ""}
-        return {"content": json.dumps(self.responses.pop(0), ensure_ascii=False),
-                "tool_calls": [], "usage": {}, "reasoning_content": ""}
+        resp = self.responses.pop(0)
+        # 字符串响应 = 原始文本（模拟坏 JSON）；字典 = JSON 序列化
+        content = resp if isinstance(resp, str) else json.dumps(resp, ensure_ascii=False)
+        return {"content": content, "tool_calls": [], "usage": {}, "reasoning_content": ""}
 
     async def stream_chat(self, messages, params=None):
         self.last_stream_messages = messages

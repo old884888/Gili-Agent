@@ -908,6 +908,98 @@ select:focus { outline: none; border-color: var(--accent); }
   50% { opacity: 1; }
 }
 
+/* ---------- 人格画像弹层 ---------- */
+.persona-head-ops { display: flex; align-items: center; gap: 12px; }
+.persona-status {
+  font-size: calc(12px * var(--fs));
+  color: var(--dim);
+  margin-bottom: 10px;
+}
+.persona-main {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+.persona-radar { flex-shrink: 0; }
+.persona-side { flex: 1; min-width: 0; }
+.persona-summary {
+  font-size: calc(13px * var(--fs));
+  line-height: 1.6;
+  color: var(--text);
+  background: rgba(91, 140, 255, 0.07);
+  border: 1px solid rgba(91, 140, 255, 0.18);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.persona-timeline { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.persona-chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--stroke);
+  color: var(--text);
+  border-radius: 20px;
+  padding: 3px 11px;
+  font-size: calc(11.5px * var(--fs));
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.persona-chip.active { border-color: var(--accent); background: rgba(91, 140, 255, 0.16); }
+.persona-chip.empty { color: var(--dim); opacity: 0.5; cursor: default; border-style: dashed; }
+.persona-note {
+  font-size: calc(10.5px * var(--fs));
+  color: rgba(148, 163, 184, 0.7);
+}
+.persona-dims {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+.pd-card {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.pd-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.pd-name { font-size: calc(12.5px * var(--fs)); font-weight: 600; }
+.pd-score {
+  font-size: calc(15px * var(--fs));
+  font-weight: 700;
+  color: #93c5fd;
+  font-variant-numeric: tabular-nums;
+}
+.pd-bar {
+  height: 5px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.pd-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 20px;
+  background: linear-gradient(90deg, #5b8cff, #8b6cff);
+}
+.pd-range {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: calc(10.5px * var(--fs));
+  color: var(--dim);
+}
+.pd-range .hi { text-align: left; }
+.pd-range .lo { text-align: right; opacity: 0.75; }
+.pd-ev {
+  margin-top: 7px;
+  font-size: calc(10.5px * var(--fs));
+  color: rgba(147, 197, 253, 0.85);
+  border-left: 2px solid rgba(91, 140, 255, 0.35);
+  padding-left: 8px;
+  word-break: break-all;
+}
+
 /* ---------- 联网检索卡 + 网页角标 ---------- */
 .search-card {
   margin-top: 8px;

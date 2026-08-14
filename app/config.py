@@ -22,11 +22,14 @@ DEFAULTS: dict = {
     "skills": {},
     "search_provider": "deepseek",
     "tavily_api_key": "",
+    "persona_model": "",
+    "persona_api_key": "",
+    "persona_base_url": "",
 }
 
 _MASK_MARK = "…"
-_MASK_KEYS = ("api_key", "tavily_api_key")
-_SECRET_KEYS = ("api_key", "tavily_api_key")
+_MASK_KEYS = ("api_key", "tavily_api_key", "persona_api_key")
+_SECRET_KEYS = ("api_key", "tavily_api_key", "persona_api_key")
 
 # 2026-07-24 起弃用的旧模型名（仍临时路由到 v4-flash 对应模式），自动迁移
 _LEGACY_MODELS = {"deepseek-chat", "deepseek-reasoner"}

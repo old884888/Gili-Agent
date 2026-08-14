@@ -109,6 +109,18 @@ def main():
         shutil.rmtree(pathlib.Path("notes") / pid, ignore_errors=True)
         db.delete_conversation(conv2["id"])
 
+    print("== 人格画像 ==")
+    from app import db as _db
+    expect_http_error("GET", "/api/persona/nonexist", 404, "画像不存在会话 404")
+    _pc = _db.create_conversation("SMOKE-PERSONA")
+    _, r = call("GET", "/api/persona/" + _pc["id"])
+    ok("画像默认关闭", r.get("enabled") is False)
+    _, r = call("POST", "/api/persona/" + _pc["id"] + "/toggle", {"enabled": True})
+    ok("画像开启", r.get("enabled") is True and r.get("turns") == 0)
+    _, r = call("POST", "/api/persona/" + _pc["id"] + "/toggle", {"enabled": False})
+    ok("画像关闭即删", r.get("enabled") is False and not r.get("snapshots"))
+    _db.delete_conversation(_pc["id"])
+
     if FAILED:
         print("\n冒烟 FAILED：" + "、".join(FAILED))
         sys.exit(1)

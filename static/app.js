@@ -1170,6 +1170,9 @@ $("#btn-settings").onclick = () => {
   $("#in-soul").value = s.soul || "";
   $("#in-search-provider").value = s.search_provider || "duckduckgo";
   $("#in-tavily-key").value = s.tavily_api_key || "";
+  $("#in-persona-model").value = s.persona_model || "";
+  $("#in-persona-key").value = s.persona_api_key || "";
+  $("#in-persona-baseurl").value = s.persona_base_url || "";
   $("#test-result").textContent = "";
   $("#settings-modal").classList.remove("hidden");
 };
@@ -1246,6 +1249,9 @@ $("#btn-save-settings").onclick = async () => {
         soul: $("#in-soul").value,
         search_provider: $("#in-search-provider").value,
         tavily_api_key: $("#in-tavily-key").value.trim(),
+        persona_model: $("#in-persona-model").value.trim(),
+        persona_api_key: $("#in-persona-key").value.trim(),
+        persona_base_url: $("#in-persona-baseurl").value.trim(),
       }),
     });
     toast("已保存并应用 · 立即生效");
@@ -2054,6 +2060,161 @@ function initSelects() {
 }
 
 $("#btn-learning").onclick = enterLearningMode;
+
+// ---------- 人格画像（大五 + 行为维，docs/13） ----------
+let personaData = null;
+let personaSelectedId = null; // null = 最新快照
+
+const PERSONA_DIMS = [
+  ["openness", "开放性", "好奇探索、爱新想法、抽象思考", "务实、偏好熟悉、具体落地"],
+  ["conscientiousness", "尽责性", "条理自律、目标明确、计划性强", "随性灵活、顺其自然"],
+  ["extraversion", "外向性", "热情健谈、乐于互动、从交流中获得能量", "内敛安静、偏好独处、表达克制"],
+  ["agreeableness", "宜人性", "合作体贴、易共情、优先考虑他人", "直率有主见、敢于反对、竞争意识"],
+  ["stability", "情绪稳定性", "情绪平稳、抗压、不内耗", "敏感、易焦虑、情绪起伏明显"],
+  ["verbosity", "表达详尽度", "长篇展开、喜欢解释原理", "简洁直接、点到为止"],
+  ["questioning", "主动质疑", "频繁追问、挑战结论", "接受为主、跟随引导"],
+  ["humor", "幽默戏谑", "爱开玩笑、反讽、玩梗", "严肃正式、就事论事"],
+];
+
+async function openPersona() {
+  if (!currentConv) { toast("先打开或新建一个对话"); return; }
+  try {
+    personaData = await api("/api/persona/" + currentConv);
+    personaSelectedId = null;
+    $("#persona-modal").classList.remove("hidden");
+    renderPersona();
+  } catch (e) {
+    toast("画像加载失败: " + e.message);
+  }
+}
+
+function renderPersona() {
+  const d = personaData;
+  if (!d) return;
+  $("#persona-switch").checked = !!d.enabled;
+  $("#persona-status").textContent = d.enabled
+    ? "已开启 · 第 " + d.turns + " 轮 · 距下次分析 " + d.next_in + " 轮"
+    : "未开启 · 开启后每聊 " + d.interval + " 轮自动分析一次";
+  const snaps = d.snapshots || [];
+  const snap = personaSelectedId
+    ? snaps.find((s) => s.id === personaSelectedId)
+    : snaps[snaps.length - 1];
+
+  // 快照时间轴
+  const tl = $("#persona-timeline");
+  tl.innerHTML = "";
+  const lastTurn = snaps.length ? snaps[snaps.length - 1].turn_no : 0;
+  const ceil = Math.max(d.enabled ? d.turns : 0, lastTurn);
+  const stop = (Math.floor(ceil / d.interval) + 1) * d.interval;
+  for (let t = d.interval; t <= stop; t += d.interval) {
+    const s = snaps.find((x) => x.turn_no === t);
+    const chip = document.createElement("button");
+    chip.className = "persona-chip" + (s ? "" : " empty") + (snap && s && snap.id === s.id ? " active" : "");
+    chip.textContent = s ? "第" + t + "轮" : "第" + t + "轮·待";
+    chip.disabled = !s;
+    if (s) chip.onclick = () => { personaSelectedId = s.id; renderPersona(); };
+    tl.appendChild(chip);
+  }
+
+  if (snap) {
+    $("#persona-summary").textContent = snap.summary || "（无摘要）";
+    drawPersonaRadar(snap.dims || {});
+    renderPersonaDims(snap);
+  } else {
+    $("#persona-summary").textContent = "还没有画像快照。开启开关后，每聊 " + d.interval + " 轮自动分析一次。";
+    drawPersonaRadar(null);
+    $("#persona-dims").innerHTML = "";
+  }
+}
+
+function renderPersonaDims(snap) {
+  const host = $("#persona-dims");
+  host.innerHTML = "";
+  for (const [key, name, hi, lo] of PERSONA_DIMS) {
+    const v = (snap.dims && snap.dims[key]) != null ? snap.dims[key] : 50;
+    const ev = (snap.evidence || []).find((e) => e.dim === key);
+    const card = document.createElement("div");
+    card.className = "pd-card";
+    card.innerHTML =
+      '<div class="pd-head"><span class="pd-name">' + name + '</span><span class="pd-score">' + v + "</span></div>" +
+      '<div class="pd-bar"><i style="width:' + v + '%"></i></div>' +
+      '<div class="pd-range"><span class="hi">' + esc(hi) + '</span><span class="lo">' + esc(lo) + "</span></div>" +
+      (ev ? '<div class="pd-ev">💬 “' + esc(ev.quote) + "”</div>" : "");
+    host.appendChild(card);
+  }
+}
+
+function drawPersonaRadar(dims) {
+  const canvas = $("#persona-radar");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2;
+  const R = Math.min(W, H) / 2 - 48;
+  const N = PERSONA_DIMS.length;
+  const pt = (i, r) => {
+    const a = (Math.PI * 2 * i) / N - Math.PI / 2;
+    return [cx + Math.cos(a) * r, cy + Math.sin(a) * r];
+  };
+  for (let ring = 1; ring <= 4; ring++) {
+    ctx.beginPath();
+    for (let i = 0; i <= N; i++) {
+      const p = pt(i % N, (R * ring) / 4);
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.strokeStyle = ring === 2 ? "rgba(148,163,184,.45)" : "rgba(255,255,255,.08)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  for (let i = 0; i < N; i++) {
+    const p = pt(i, R);
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(p[0], p[1]);
+    ctx.strokeStyle = "rgba(255,255,255,.08)";
+    ctx.stroke();
+    const lp = pt(i, R + 24);
+    ctx.fillStyle = "#9aa7bd";
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = Math.abs(lp[0] - cx) < 12 ? "center" : lp[0] > cx ? "left" : "right";
+    ctx.fillText(PERSONA_DIMS[i][1], lp[0], lp[1] + 4);
+  }
+  if (!dims) return;
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const k = PERSONA_DIMS[i % N][0];
+    const v = (dims[k] != null ? dims[k] : 50) / 100;
+    const p = pt(i % N, Math.max(0.04, v) * R);
+    if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+  }
+  ctx.closePath();
+  ctx.fillStyle = "rgba(91,140,255,.25)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(139,161,255,.9)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+$("#btn-persona").onclick = openPersona;
+$("#btn-close-persona").onclick = () => $("#persona-modal").classList.add("hidden");
+$("#persona-modal").onclick = (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden");
+};
+$("#persona-switch").onchange = async (e) => {
+  if (!currentConv) return;
+  try {
+    const enabled = e.target.checked;
+    personaData = await api("/api/persona/" + currentConv + "/toggle", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    personaSelectedId = null;
+    renderPersona();
+    toast(enabled ? "画像已开启：每 20 轮自动分析一次" : "画像已关闭：本会话快照已删除");
+  } catch (err) {
+    toast("开关失败: " + err.message);
+    e.target.checked = !e.target.checked;
+  }
+};
 $("#btn-learning-docs").onclick = () => { loadLearningProjects().then(openLearningCenter); };
 
 // 学习中心
