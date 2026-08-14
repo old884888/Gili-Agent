@@ -690,6 +690,24 @@ def list_learning_chapters(pid: str) -> list[dict]:
     )
 
 
+def insert_learning_chapter(pid: str, title: str, objective: str, order_no: int) -> None:
+    """在指定位置插入章节，后续章节顺延（单连接内原子完成）。"""
+    conn = _conn()
+    try:
+        conn.execute(
+            "UPDATE learning_chapters SET order_no=order_no+1 WHERE project_id=? AND order_no>=?",
+            (pid, order_no),
+        )
+        conn.execute(
+            """INSERT INTO learning_chapters (id, project_id, title, objective, order_no, status, note, updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            ("c" + uuid.uuid4().hex[:8], pid, title, objective, order_no, "pending", "", _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def set_chapter_status(chapter_id: str, status: str) -> None:
     _exec("UPDATE learning_chapters SET status=?, updated_at=? WHERE id=?", (status, _now(), chapter_id))
 
@@ -712,6 +730,59 @@ def get_current_chapter(pid: str) -> dict | None:
 
 def update_learning_chapter_note(chapter_id: str, note: str) -> None:
     _exec("UPDATE learning_chapters SET note=?, updated_at=? WHERE id=?", (note, _now(), chapter_id))
+
+
+def update_learning_chapter(
+    chapter_id: str, title: str | None = None, objective: str | None = None
+) -> None:
+    """编辑章节标题/目标（None 表示不改该字段）。"""
+    sets, params = [], []
+    if title is not None:
+        sets.append("title=?")
+        params.append(str(title)[:60])
+    if objective is not None:
+        sets.append("objective=?")
+        params.append(str(objective)[:120])
+    if not sets:
+        return
+    sets.append("updated_at=?")
+    params.append(_now())
+    params.append(chapter_id)
+    _exec(f"UPDATE learning_chapters SET {', '.join(sets)} WHERE id=?", tuple(params))
+
+
+def delete_learning_chapter(chapter_id: str) -> None:
+    """删除章节并压缩后续序号；若被删的是当前章节则清空 current_chapter。"""
+    ch = get_learning_chapter(chapter_id)
+    if not ch:
+        return
+    pid = ch["project_id"]
+    _exec("DELETE FROM learning_chapters WHERE id=?", (chapter_id,))
+    _exec(
+        "UPDATE learning_chapters SET order_no=order_no-1 WHERE project_id=? AND order_no>?",
+        (pid, ch["order_no"]),
+    )
+    project = get_learning_project(pid)
+    if project and project.get("current_chapter") == chapter_id:
+        set_current_chapter(pid, None)
+
+
+def move_learning_chapter(chapter_id: str, direction: str) -> None:
+    """章节上移/下移（与相邻章节交换 order_no）。"""
+    ch = get_learning_chapter(chapter_id)
+    if not ch:
+        return
+    pid = ch["project_id"]
+    delta = -1 if direction == "up" else 1
+    neighbor = _query(
+        "SELECT * FROM learning_chapters WHERE project_id=? AND order_no=? LIMIT 1",
+        (pid, ch["order_no"] + delta),
+    )
+    if not neighbor:
+        return
+    nb = neighbor[0]
+    _exec("UPDATE learning_chapters SET order_no=? WHERE id=?", (ch["order_no"], nb["id"]))
+    _exec("UPDATE learning_chapters SET order_no=?, updated_at=? WHERE id=?", (nb["order_no"], _now(), chapter_id))
 
 
 def update_learning_project_progress(pid: str, progress_pct: int) -> None:
@@ -741,6 +812,20 @@ def add_note_meta(pid: str, filename: str, title: str) -> None:
            VALUES (?,?,?,?,?,?)""",
         ("n" + uuid.uuid4().hex[:8], pid, filename, title, 1, _now()),
     )
+
+
+def touch_note_meta(pid: str, filename: str) -> None:
+    """文档内容被重写：版本号 +1 并更新时间（无记录则补建）。"""
+    _exec(
+        "UPDATE learning_notes_meta SET version_no=version_no+1, updated_at=? WHERE project_id=? AND filename=?",
+        (_now(), pid, filename),
+    )
+    rows = _query(
+        "SELECT id FROM learning_notes_meta WHERE project_id=? AND filename=? LIMIT 1",
+        (pid, filename),
+    )
+    if not rows:
+        add_note_meta(pid, filename, filename.removesuffix(".md"))
 
 
 def list_note_meta(pid: str) -> list[dict]:

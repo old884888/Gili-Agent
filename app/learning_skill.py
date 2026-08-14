@@ -687,7 +687,10 @@ def has_pending_update(cid: str) -> bool:
 
 
 async def propose_update(provider, cid: str) -> dict | None:
-    """判断最近学习是否完成某章，返回建议消息数据；不合适则 None。"""
+    """每 2 轮后处理：一次 LLM 调用同时检测「章节学完」与「旁支概念 K」。
+
+    章节学完 → 建议打勾；旁支概念 → 建议挂起疑问本（不打断主线，可捡回）。
+    """
     if getattr(provider, "name", "") != "deepseek":
         return None
     project = db.get_learning_project_by_conv(cid)
@@ -697,50 +700,77 @@ async def propose_update(provider, cid: str) -> dict | None:
     if turns - _last_proposal_turn.get(cid, -10) < 2:
         return None
     chapters = [c for c in db.list_learning_chapters(project["id"]) if c.get("status") != "done"]
-    if not chapters:
-        return None
 
     history = db.get_ui_messages(cid)[-6:]
     transcript = "\n".join(
         f"{m['role']}: {str(m['content'])[:400]}" for m in history if m["role"] in ("user", "assistant")
     )
-    numbered = "\n".join(f"{i+1}. {c['title']}" for i, c in enumerate(chapters[:20]))
+    numbered = "\n".join(f"{i+1}. {c['title']}" for i, c in enumerate(chapters[:20])) or "（全部章节已完成）"
     prompt = (
-        "判断用户最近是否完整学完了某个章节。若明显完成，输出要标记的章节序号；否则 none。\n"
-        "只输出 JSON：{\"action\":\"chapter_done\",\"chapter_index\":1,\"note\":\"一句话笔记（可为空）\"} "
-        "或 {\"action\":\"none\"}。\n"
+        "你是学习教练。看最近这段学习对话，同时判断两件事：\n"
+        "1) chapter_done：用户是否明显完整学完了某个待学章节（输出章节序号，否则 null）。\n"
+        "2) sidebar：对话中是否出现一个明确的「旁支概念」——当前学习主线之外、但被提到且用户之后很可能想学的概念/工具/主题（1-2 个词）。"
+        "出现则给 concept、brief（一句话解释）、source_ref（出处章节或上下文），否则 null。"
+        "注意：主线章节内的正常知识点不算旁支；用户已经明确要求现在展开的也不算。\n"
+        "只输出 JSON（没有的字段给 null）："
+        '{"chapter_done":{"chapter_index":1,"note":""},"sidebar":{"concept":"","brief":"","source_ref":""}}\n'
         f"待学章节：\n{numbered}\n\n最近对话：\n{transcript[:2500]}"
     )
     try:
         resp = await provider.complete(
             [{"role": "system", "content": "只输出合法 JSON，不要解释。"},
              {"role": "user", "content": prompt}],
-            ChatParams(thinking_enabled=False, temperature=0.1, max_tokens=300),
+            ChatParams(thinking_enabled=False, temperature=0.1, max_tokens=400),
         )
         data = _parse_json(resp.get("content") or "")
-        if not isinstance(data, dict) or data.get("action") != "chapter_done":
+        if not isinstance(data, dict):
             return None
-        idx = int(data.get("chapter_index") or 0)
-        if not (1 <= idx <= len(chapters)):
-            return None
-        chapter = chapters[idx - 1]
-        _pending_updates[cid] = {
-            "chapter_id": str(chapter["id"]),
-            "chapter_title": str(chapter["title"]),
-            "chapter_index": idx,
-            "note": str(data.get("note") or ""),
-            "project_id": str(project["id"]),
-        }
         _last_proposal_turn[cid] = turns
-        return {
-            "content": (
-                f"📌 学习档案建议：看起来你已经学完了 **第 {idx} 章 {chapter['title']}**。\n\n"
-                "要我把这一章勾掉吗？也可以补充一句笔记。"
-            ),
-            "quick_options": ["✅ 标记完成", "📖 我学的是别的章节", "↩ 暂不"],
-            "input": True,
-            "placeholder": "补充一句笔记，或直接确认…",
-        }
+        cd = data.get("chapter_done")
+        if isinstance(cd, dict) and cd.get("chapter_index"):
+            idx = int(cd["chapter_index"])
+            if not (1 <= idx <= len(chapters)):
+                return None
+            chapter = chapters[idx - 1]
+            _pending_updates[cid] = {
+                "kind": "chapter",
+                "chapter_id": str(chapter["id"]),
+                "chapter_title": str(chapter["title"]),
+                "chapter_index": idx,
+                "note": str(cd.get("note") or ""),
+                "project_id": str(project["id"]),
+            }
+            return {
+                "content": (
+                    f"📌 学习档案建议：看起来你已经学完了 **第 {idx} 章 {chapter['title']}**。\n\n"
+                    "要我把这一章勾掉吗？也可以补充一句笔记。"
+                ),
+                "quick_options": ["✅ 标记完成", "📖 我学的是别的章节", "↩ 暂不"],
+                "input": True,
+                "placeholder": "补充一句笔记，或直接确认…",
+            }
+        sb = data.get("sidebar")
+        if isinstance(sb, dict) and str(sb.get("concept") or "").strip():
+            concept = str(sb["concept"]).strip()[:40]
+            _pending_updates[cid] = {
+                "kind": "sidebar",
+                "concept": concept,
+                "brief": str(sb.get("brief") or "").strip()[:100],
+                "source_ref": str(sb.get("source_ref") or "").strip()[:80],
+                "project_id": str(project["id"]),
+            }
+            return {
+                "content": (
+                    f"🧭 我注意到一个**旁支概念**：「**{concept}**」"
+                    + (f"（{sb['brief']}）" if sb.get("brief") else "")
+                    + "——它不在当前学习主线上。\n\n"
+                    "要挂起到疑问本（记出处，之后随时捡回），还是现在展开聊它？"
+                ),
+                "quick_options": ["📌 挂起到疑问本", "💬 现在展开", "↩ 暂不"],
+                "input": False,
+                "placeholder": "",
+            }
+        return None
     except Exception:
         return None
 
@@ -753,6 +783,7 @@ def _finish_chapter_update(pending: dict, chapter: dict, extra_note: str = "") -
     if extra_note:
         db.update_learning_chapter_note(chapter["id"], extra_note)
     done, total = refresh_project_progress(pending["project_id"])
+    regenerate_project_docs(pending["project_id"])  # 进度表.md 与档案同步
     knowledge.reindex_project(pending["project_id"])
     note_line = f"\n\n> 备注：{extra_note}" if extra_note else ""
     return {
@@ -788,6 +819,31 @@ def handle_update_answer(cid: str, text: str) -> dict:
     if not pending:
         return {"status": "ok", "content": "好的。"}
     t = (text or "").strip()
+
+    # 旁支概念建议：挂起 / 展开 / 暂不
+    if pending.get("kind") == "sidebar":
+        concept = pending.get("concept", "")
+        if "暂不" in t or "跳过" in t or "不用" in t:
+            _pending_updates.pop(cid, None)
+            return {"status": "skipped", "content": "好的，先不挂。主线继续。"}
+        if "展开" in t:
+            _pending_updates.pop(cid, None)
+            return {
+                "status": "expand",
+                "content": f"好，我们展开聊「**{concept}**」——直接问我就行，聊完随时回主线。",
+            }
+        append_question(
+            pending["project_id"], concept,
+            concept=pending.get("concept", ""),
+            source_ref=pending.get("source_ref") or "学习对话",
+        )
+        _pending_updates.pop(cid, None)
+        ref = f"（出处：{pending['source_ref']}）" if pending.get("source_ref") else ""
+        return {
+            "status": "parked",
+            "content": f"📌 已把「**{concept}**」挂到疑问本{ref}。主线继续，之后随时捡回。",
+        }
+
     if "暂不" in t or "跳过" in t or "不用" in t:
         _pending_updates.pop(cid, None)
         return {"status": "skipped", "content": "好的，先不动。继续学吧。"}
@@ -901,10 +957,79 @@ def _finish_chapter_command(project: dict, idx: int | None) -> dict:
     }
 
 
+def append_question(pid: str, question: str, concept: str = "", source_ref: str = "") -> None:
+    """疑问挂起统一入口：DB + 疑问本.md 双写 + 重建索引（Obsidian 与问答都可见）。"""
+    db.add_learning_question(pid, question, concept=concept, source_ref=source_ref)
+    pdir = NOTES_DIR / pid
+    pdir.mkdir(parents=True, exist_ok=True)
+    fpath = pdir / "疑问本.md"
+    try:
+        existing = fpath.read_text(encoding="utf-8") if fpath.exists() else ""
+    except OSError:
+        existing = ""
+    line = f"## {question}"
+    if concept:
+        line += f"（{concept}）"
+    if source_ref:
+        line += f"\n- 出处：{source_ref}"
+    fpath.write_text(existing.rstrip() + "\n\n" + line + "\n", encoding="utf-8")
+    db.touch_note_meta(pid, "疑问本.md")
+    knowledge.reindex_project(pid)
+
+
+def regenerate_project_docs(pid: str) -> None:
+    """按 DB 重写 大纲.md 与 进度表.md（章节增删改/打勾后同步；笔记与疑问本不动）。"""
+    project = db.get_learning_project(pid)
+    if not project:
+        return
+    chapters = db.list_learning_chapters(pid)
+    pdir = NOTES_DIR / pid
+    pdir.mkdir(parents=True, exist_ok=True)
+
+    # 大纲.md：保留旧摘要行（> 开头第一行），章节列表按 DB 重建
+    old_summary = ""
+    try:
+        for line in (pdir / "大纲.md").read_text(encoding="utf-8").splitlines():
+            if line.startswith(">"):
+                old_summary = line
+                break
+    except OSError:
+        pass
+    outline = [f"# {project['subject']} 学习大纲", ""]
+    if old_summary:
+        outline += [old_summary, ""]
+    outline += [
+        f"> 更新：{_fmt_date()}｜水平：{project.get('level_from') or ''} → {project.get('level_to') or ''}｜风格：{project.get('style') or ''}",
+        "",
+        "## 章节",
+        "",
+    ]
+    for i, ch in enumerate(chapters, 1):
+        obj = f" —— {ch.get('objective', '')}" if ch.get("objective") else ""
+        outline.append(f"{i}. **{ch.get('title', '')}**{obj}")
+    (pdir / "大纲.md").write_text("\n".join(outline) + "\n", encoding="utf-8")
+    db.touch_note_meta(pid, "大纲.md")
+
+    # 进度表.md：状态/日期/备注按 DB 重建（打勾后不再与档案脱节）
+    prog = [
+        f"# {project['subject']} 进度跟踪表",
+        "",
+        "| # | 章节 | 状态 | 日期 | 备注 |",
+        "|---|------|------|------|------|",
+    ]
+    for i, ch in enumerate(chapters, 1):
+        done = ch.get("status") == "done"
+        mark = "✓" if done else "☐"
+        date = (ch.get("updated_at") or "")[:10] if done else ""
+        note = (ch.get("note") or "").replace("|", "｜")
+        prog.append(f"| {i} | {ch.get('title', '')} | {mark} | {date} | {note} |")
+    (pdir / "进度表.md").write_text("\n".join(prog) + "\n", encoding="utf-8")
+    db.touch_note_meta(pid, "进度表.md")
+
+
 def _add_note_command(project: dict, content: str, kind: str) -> dict:
     if kind == "question":
-        db.add_learning_question(project["id"], content, concept="", source_ref="对话")
-        knowledge.reindex_project(project["id"])
+        append_question(project["id"], content)
         return {"status": "ok", "command": "question", "content": "❓ 已挂到疑问本，主线继续。"}
     chapter = db.get_current_chapter(project["id"])
     if chapter:

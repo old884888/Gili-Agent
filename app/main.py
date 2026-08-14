@@ -1119,18 +1119,75 @@ async def delete_learning_project(pid: str):
 
 @app.put("/api/learning/chapters/{chapter_id}")
 async def update_chapter(chapter_id: str, body: dict):
-    """手动勾选/取消章节完成状态。"""
+    """章节编辑：勾选/取消完成、标题/目标/备注（结构变化自动同步文档与索引）。"""
     chapter = db.get_learning_chapter(chapter_id)
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
+    pid = chapter["project_id"]
     status = str(body.get("status") or "")
     if status in ("done", "pending"):
         db.set_chapter_status(chapter_id, status)
     if body.get("note") is not None:
         db.update_learning_chapter_note(chapter_id, str(body["note"]))
-    done, total = learning_skill.refresh_project_progress(chapter["project_id"])
-    knowledge.reindex_project(chapter["project_id"])
+    if body.get("title") is not None or body.get("objective") is not None:
+        db.update_learning_chapter(
+            chapter_id,
+            title=body.get("title") if body.get("title") is not None else None,
+            objective=body.get("objective") if body.get("objective") is not None else None,
+        )
+    done, total = learning_skill.refresh_project_progress(pid)
+    learning_skill.regenerate_project_docs(pid)  # 大纲/进度表与档案同步
+    knowledge.reindex_project(pid)
     return {"status": "ok", "done": done, "total": total}
+
+
+@app.post("/api/learning/projects/{pid}/chapters")
+async def add_chapter(pid: str, body: dict):
+    """插入新章节（order_no 缺省追加到末尾）。"""
+    project = db.get_learning_project(pid)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    title = str(body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="章节标题不能为空")
+    chapters = db.list_learning_chapters(pid)
+    order_no = int(body.get("order_no") or 0)
+    if not (1 <= order_no <= len(chapters) + 1):
+        order_no = len(chapters) + 1
+    db.insert_learning_chapter(pid, title[:60], str(body.get("objective") or "")[:120], order_no)
+    learning_skill.refresh_project_progress(pid)
+    learning_skill.regenerate_project_docs(pid)
+    knowledge.reindex_project(pid)
+    return {"status": "ok", "chapters": db.list_learning_chapters(pid)}
+
+
+@app.delete("/api/learning/chapters/{chapter_id}")
+async def delete_chapter(chapter_id: str):
+    """删除章节（后续章节序号自动前移；被删的是当前章节则清空）。"""
+    chapter = db.get_learning_chapter(chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    pid = chapter["project_id"]
+    db.delete_learning_chapter(chapter_id)
+    learning_skill.refresh_project_progress(pid)
+    learning_skill.regenerate_project_docs(pid)
+    knowledge.reindex_project(pid)
+    return {"status": "ok", "chapters": db.list_learning_chapters(pid)}
+
+
+@app.post("/api/learning/chapters/{chapter_id}/move")
+async def move_chapter(chapter_id: str, body: dict):
+    """章节上移/下移。"""
+    chapter = db.get_learning_chapter(chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    direction = str(body.get("direction") or "")
+    if direction not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="direction 必须是 up 或 down")
+    db.move_learning_chapter(chapter_id, direction)
+    learning_skill.regenerate_project_docs(chapter["project_id"])
+    knowledge.reindex_project(chapter["project_id"])
+    return {"status": "ok", "chapters": db.list_learning_chapters(chapter["project_id"])}
 
 
 @app.post("/api/learning/chapters/{chapter_id}/start")

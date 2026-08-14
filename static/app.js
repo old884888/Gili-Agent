@@ -2583,6 +2583,46 @@ function renderStudioDetail() {
   renderStudioPane();
 }
 
+async function refreshStudioDetail() {
+  const pid = studioSelected;
+  if (!pid) return;
+  studioDetailCache[pid] = null;
+  studioDetail = null;
+  await openStudioDetail(pid);
+}
+
+function editChapterRow(item) {
+  const ch = (studioDetail.chapters || []).find((c) => c.id === item.dataset.cid);
+  if (!ch || item.querySelector(".chapter-edit-form")) return;
+  const form = document.createElement("div");
+  form.className = "chapter-edit-form";
+  form.innerHTML =
+    '<input class="ch-inp" data-f="title" placeholder="章节标题">' +
+    '<input class="ch-inp" data-f="objective" placeholder="学习目标（可选）">' +
+    '<button class="btn small primary" data-act="save">保存</button>' +
+    '<button class="btn small" data-act="cancel">取消</button>';
+  form.querySelector('[data-f="title"]').value = ch.title || "";
+  form.querySelector('[data-f="objective"]').value = ch.objective || "";
+  item.appendChild(form);
+  form.querySelector('[data-act="save"]').onclick = async () => {
+    const title = form.querySelector('[data-f="title"]').value.trim();
+    if (!title) { toast("标题不能为空"); return; }
+    try {
+      await api(`/api/learning/chapters/${ch.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          title,
+          objective: form.querySelector('[data-f="objective"]').value.trim(),
+        }),
+      });
+      await refreshStudioDetail();
+    } catch (e) {
+      toast("保存失败: " + e.message);
+    }
+  };
+  form.querySelector('[data-act="cancel"]').onclick = () => form.remove();
+}
+
 function renderStudioPane() {
   const host = $("#studio-pane");
   if (!host || !studioDetail) return;
@@ -2606,11 +2646,19 @@ function renderStudioPane() {
             `<div class="ch-main"><div class="ch-title">${esc(ch.title)}` +
             `<span class="ch-status ${done ? "done" : ""}">${done ? "已完成" : "待学习"}</span></div>` +
             (ch.objective ? `<div class="ch-obj">${esc(ch.objective)}</div>` : "") +
-            '</div><button class="btn small ch-start" data-act="start" title="在对话中开始本章">开始</button></div>'
+            '</div>' +
+            '<div class="ch-ops">' +
+            '<button class="ch-op" data-act="move" data-dir="up" title="上移">⬆</button>' +
+            '<button class="ch-op" data-act="move" data-dir="down" title="下移">⬇</button>' +
+            '<button class="ch-op" data-act="edit" title="编辑标题/目标">✏️</button>' +
+            '<button class="ch-op danger" data-act="del" title="删除章节">🗑</button>' +
+            '<button class="btn small ch-start" data-act="start" title="在对话中开始本章">开始</button>' +
+            '</div></div>'
           );
         })
         .join("") +
-      "</div>";
+      "</div>" +
+      '<div class="chapter-add-row"><button id="btn-chapter-add" class="btn small">＋ 添加章节</button></div>';
     host.querySelectorAll('[data-act="toggle"]').forEach((btn) => {
       btn.onclick = async () => {
         const item = btn.closest(".chapter-item");
@@ -2653,6 +2701,79 @@ function renderStudioPane() {
         }
       };
     });
+    host.querySelectorAll('[data-act="move"]').forEach((btn) => {
+      btn.onclick = async () => {
+        const cid = btn.closest(".chapter-item").dataset.cid;
+        btn.disabled = true;
+        try {
+          await api(`/api/learning/chapters/${cid}/move`, {
+            method: "POST",
+            body: JSON.stringify({ direction: btn.dataset.dir }),
+          });
+          await refreshStudioDetail();
+        } catch (e) {
+          toast("移动失败: " + e.message);
+          btn.disabled = false;
+        }
+      };
+    });
+    host.querySelectorAll('[data-act="edit"]').forEach((btn) => {
+      btn.onclick = () => editChapterRow(btn.closest(".chapter-item"));
+    });
+    host.querySelectorAll('[data-act="del"]').forEach((btn) => {
+      btn.onclick = async () => {
+        const item = btn.closest(".chapter-item");
+        const ch = (studioDetail.chapters || []).find((c) => c.id === item.dataset.cid);
+        if (!ch) return;
+        if (!confirm(`删除章节「${ch.title}」？进度与文档会同步更新。`)) return;
+        btn.disabled = true;
+        try {
+          await api(`/api/learning/chapters/${item.dataset.cid}`, { method: "DELETE" });
+          toast("已删除");
+          await refreshStudioDetail();
+        } catch (e) {
+          toast("删除失败: " + e.message);
+          btn.disabled = false;
+        }
+      };
+    });
+    const addBtn = $("#btn-chapter-add");
+    if (addBtn) {
+      addBtn.onclick = () => {
+        if (host.querySelector(".chapter-add-form")) return;
+        const form = document.createElement("div");
+        form.className = "chapter-add-form";
+        form.innerHTML =
+          '<input class="ch-inp" data-f="title" placeholder="章节标题">' +
+          '<input class="ch-inp" data-f="objective" placeholder="学习目标（可选）">' +
+          '<button class="btn small primary" data-act="save-add">保存</button>' +
+          '<button class="btn small" data-act="cancel-add">取消</button>';
+        addBtn.after(form);
+        addBtn.style.display = "none";
+        const titleEl = form.querySelector('[data-f="title"]');
+        titleEl.focus();
+        form.querySelector('[data-act="save-add"]').onclick = async () => {
+          const title = titleEl.value.trim();
+          if (!title) { toast("标题不能为空"); return; }
+          try {
+            await api(`/api/learning/projects/${studioDetail.project.id}/chapters`, {
+              method: "POST",
+              body: JSON.stringify({
+                title,
+                objective: form.querySelector('[data-f="objective"]').value.trim(),
+              }),
+            });
+            await refreshStudioDetail();
+          } catch (e) {
+            toast("添加失败: " + e.message);
+          }
+        };
+        form.querySelector('[data-act="cancel-add"]').onclick = () => {
+          form.remove();
+          addBtn.style.display = "";
+        };
+      };
+    }
     return;
   }
 

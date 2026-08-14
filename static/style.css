@@ -1764,6 +1764,30 @@ input[type="text"]:focus, input[type="password"]:focus, textarea:focus, select:f
 }
 .ch-check:hover { border-color: rgba(91, 140, 255, 0.5); color: #fff; }
 .ch-start { flex-shrink: 0; }
+.ch-ops { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.ch-op {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: none; border-radius: 5px;
+  color: var(--dim); cursor: pointer; font-size: calc(11px * var(--fs));
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.ch-op:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+.ch-op.danger:hover { color: #f87171; }
+.chapter-add-row { display: flex; margin-top: 8px; }
+.chapter-add-form, .chapter-edit-form {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 6px; padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed var(--stroke); border-radius: 8px;
+}
+.ch-inp {
+  flex: 1; min-width: 120px;
+  background: var(--bg3); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 8px; font-size: calc(12px * var(--fs));
+}
+.ch-inp:focus { border-color: var(--accent); }
 .chapter-item.done .ch-num {
   color: #5eead4;
   background: rgba(52, 211, 153, 0.12);
