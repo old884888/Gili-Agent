@@ -782,6 +782,17 @@ async def chat(req: ChatRequest):
                     elif evt["kind"] == "reasoning":
                         reasoning_text += evt["text"]
                     await asyncio.sleep(0)
+        except (asyncio.CancelledError, GeneratorExit):
+            # 客户端断开（用户点暂停/切走）：已生成的部分回答落库，然后退出
+            if raw.strip():
+                db.add_message(
+                    cid, "assistant", raw, reasoning=reasoning_text,
+                    version_group=version_group, version_no=version_no,
+                    sources=json.dumps(knowledge.source_meta(kb_sources), ensure_ascii=False)
+                    if kb_sources else None,
+                )
+            db.touch(cid)
+            raise
         except Exception as e:  # noqa: BLE001 —— 网络/API 失败：保留部分回答并通知前端
             log.exception("[chat-error] %s: %s", type(e).__name__, e)
             error_detail = f"请求失败：{e}"

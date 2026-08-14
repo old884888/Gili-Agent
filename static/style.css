@@ -890,32 +890,79 @@ select:focus { outline: none; border-color: var(--accent); }
 .opt-chip:hover:not(:disabled) { background: var(--accent); color: #fff; }
 .opt-chip:disabled { opacity: 0.45; cursor: default; }
 
-/* ---------- 发送队列 ---------- */
-.queue-badge {
-  font-size: calc(10.5px * var(--fs));
-  color: #93c5fd;
-  background: rgba(91, 140, 255, 0.12);
-  border: 1px solid rgba(91, 140, 255, 0.3);
-  border-radius: 20px;
-  padding: 2px 9px;
-  cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+/* ---------- 发送队列：一行一张卡片 ---------- */
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 152px;
+  overflow-y: auto;
+  margin: 0 18px 8px;
+  padding: 8px 10px;
+  background: rgba(91, 140, 255, 0.06);
+  border: 1px solid rgba(91, 140, 255, 0.22);
+  border-radius: 12px;
 }
-.queue-badge:hover { background: rgba(91, 140, 255, 0.2); border-color: rgba(91, 140, 255, 0.5); }
-.msg.queued { opacity: 0.62; border: 1px dashed rgba(147, 197, 253, 0.4); }
-.queue-mark {
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: calc(11px * var(--fs));
+  color: var(--dim);
+}
+.qi-clear {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: calc(11px * var(--fs));
+  cursor: pointer;
+  padding: 0 2px;
+}
+.qi-clear:hover { text-decoration: underline; }
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(30, 41, 59, 0.72);
+  border: 1px solid rgba(147, 197, 253, 0.18);
+  border-radius: 10px;
+  padding: 7px 10px;
+  animation: queue-in 0.18s ease;
+}
+.qi-text {
+  flex: 1;
+  min-width: 0;
+  font-size: calc(12px * var(--fs));
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.qi-x {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.qi-x:hover { background: rgba(239, 68, 68, 0.25); color: #fca5a5; }
+@keyframes queue-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; }
+}
+.pause-mark {
   display: inline-block;
   margin-top: 6px;
   font-size: calc(10px * var(--fs));
-  color: #93c5fd;
-  background: rgba(91, 140, 255, 0.1);
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.12);
   border-radius: 10px;
   padding: 1px 8px;
-  animation: queue-breathe 1.6s ease-in-out infinite;
-}
-@keyframes queue-breathe {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
 }
 
 /* ---------- 人格画像弹层 ---------- */
@@ -1401,6 +1448,11 @@ body::after {
   box-shadow: 0 8px 22px rgba(72, 110, 255, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 .btn.primary:hover { background: linear-gradient(135deg, #6b97ff, #8b70ff); }
+.btn.primary.pause {
+  background: linear-gradient(135deg, #f59e0b, #ef4444);
+  box-shadow: 0 8px 22px rgba(239, 68, 68, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.btn.primary.pause:hover { background: linear-gradient(135deg, #fbbf24, #f87171); }
 .btn.ghost { background: transparent; }
 
 input[type="text"],

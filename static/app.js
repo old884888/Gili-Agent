@@ -1035,9 +1035,8 @@ async function sendMessage() {
       return;
     }
     const qid = "q" + ++_queueSeq;
-    appendMessage("user", text, false, { queued: true, qid });
     sendQueue.push({ text, regenId: null, qid, cid: currentConv });
-    updateQueueBadge();
+    renderQueueList();
     toast("已加入发送队列：当前回复完成后自动发送");
     return;
   }
@@ -1049,13 +1048,11 @@ async function drainQueue() {
   if (queueBusy || streamingCid === currentConv) return;
   const idx = sendQueue.findIndex((q) => q.cid === currentConv);
   if (idx === -1) {
-    updateQueueBadge();
+    renderQueueList();
     return;
   }
   const next = sendQueue.splice(idx, 1)[0];
-  updateQueueBadge();
-  const placeholder = document.querySelector('.msg.user.queued[data-qid="' + next.qid + '"]');
-  if (placeholder) placeholder.remove(); // 占位气泡移除，sendChat 会重新追加正式气泡
+  renderQueueList();
   queueBusy = true;
   try {
     if (next.regenId) await sendChat("", next.regenId);
@@ -1067,22 +1064,70 @@ async function drainQueue() {
 }
 let queueBusy = false;
 
-function updateQueueBadge() {
-  const badge = $("#queue-badge");
-  if (!badge) return;
-  if (sendQueue.length) {
-    badge.classList.remove("hidden");
-    badge.textContent = "⏳ 队列 " + sendQueue.length + " 条（点击取消）";
-  } else {
-    badge.classList.add("hidden");
+// 发送队列 → 输入框上方的卡片行列表：一条需求一行，可单条取消 / 全部清空
+function renderQueueList() {
+  const list = $("#queue-list");
+  if (!list) return;
+  const mine = sendQueue.filter((q) => q.cid === currentConv);
+  list.innerHTML = "";
+  if (!mine.length) {
+    list.classList.add("hidden");
+    return;
+  }
+  list.classList.remove("hidden");
+
+  const head = document.createElement("div");
+  head.className = "queue-head";
+  const label = document.createElement("span");
+  label.textContent = "⏳ 发送队列 · " + mine.length + " 条（当前回复完成后自动发送）";
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "qi-clear";
+  clearBtn.textContent = "全部取消";
+  clearBtn.onclick = () => {
+    sendQueue = sendQueue.filter((q) => q.cid !== currentConv);
+    renderQueueList();
+    toast("队列已清空");
+  };
+  head.appendChild(label);
+  head.appendChild(clearBtn);
+  list.appendChild(head);
+
+  for (const q of mine) {
+    const row = document.createElement("div");
+    row.className = "queue-item";
+    row.dataset.qid = q.qid;
+    const txt = document.createElement("span");
+    txt.className = "qi-text";
+    txt.textContent = (q.regenId ? "🔄 重新生成： " : "") + q.text;
+    txt.title = q.text;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "qi-x";
+    x.title = "取消这条";
+    x.textContent = "✕";
+    x.onclick = () => {
+      sendQueue = sendQueue.filter((item) => item.qid !== q.qid);
+      renderQueueList();
+      toast("已取消 1 条排队消息");
+    };
+    row.appendChild(txt);
+    row.appendChild(x);
+    list.appendChild(row);
   }
 }
 
 // 统一发送管道：正常对话 / 重新生成（regenId 指定目标 AI 消息）
 
 function setSendState() {
-  $("#btn-send").disabled = false;
-  $("#btn-send").textContent = streamingCid === currentConv ? "加入队列" : "发送";
+  const btn = $("#btn-send");
+  btn.disabled = false;
+  const streaming = streamingCid === currentConv;
+  btn.textContent = streaming ? "⏸ 暂停" : "发送";
+  btn.classList.toggle("pause", streaming);
+  btn.title = streaming
+    ? "暂停本次输出（已生成的部分会保留；Enter 仍可继续排队）"
+    : "发送（Enter 同样可发送）";
 }
 
 const input = $("#input");
@@ -1097,15 +1142,25 @@ input.addEventListener("keydown", (e) => {
     sendMessage();
   }
 });
-$("#btn-send").onclick = sendMessage;
-$("#queue-badge").onclick = () => {
-  if (!sendQueue.length) return;
-  if (!confirm("清空发送队列（" + sendQueue.length + " 条待发消息）？")) return;
-  document.querySelectorAll(".msg.user.queued").forEach((el) => el.remove());
-  sendQueue = [];
-  updateQueueBadge();
-  toast("队列已清空");
+$("#btn-send").onclick = () => {
+  // 本会话输出中：点击 = 暂停；Enter 仍走 sendMessage → 自动排队
+  if (streamingCid === currentConv) {
+    abortStream();
+    return;
+  }
+  sendMessage();
 };
+
+// 暂停实现：AbortController 断流（DeepSeek 无中途暂停协议 → 停止生成并保留已生成部分，
+// 后端在断连时把部分回答落库）
+const _abortByCid = new Map(); // cid → AbortController
+function abortStream() {
+  const ctl = _abortByCid.get(currentConv);
+  if (ctl) {
+    ctl.abort();
+    toast("⏸ 正在暂停本次输出…");
+  }
+}
 
 $("#btn-fav").onclick = async () => {
   if (!currentConv) return toast("先打开或新建一个对话");
@@ -2588,9 +2643,17 @@ async function sendChat(text, regenId) {
   setSendState();
   loadConversations(); // 刷新卡片"输出中"状态
 
+  const ctl = new AbortController();
+  _abortByCid.set(myCid, ctl);
+  let aborted = false;
+  ctl.signal.addEventListener("abort", () => {
+    aborted = true;
+  });
+
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
+      signal: ctl.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         conversation_id: currentConv,
@@ -2611,6 +2674,7 @@ async function sendChat(text, regenId) {
       if (j.status === "created") toast("🎉 学习项目创建成功！");
       streamingCid = null;
       setSendState();
+      _abortByCid.delete(myCid);
       await reloadCurrentConv();
       return;
     }
@@ -2700,9 +2764,18 @@ async function sendChat(text, regenId) {
       }
     }
   } catch (e) {
-    rawContent += "\n[错误] " + e.message;
-    contentDiv.textContent = rawContent;
-    contentDiv.dataset.raw = rawContent;
+    if (aborted || (e && e.name === "AbortError")) {
+      // 用户点了暂停：已生成部分保留（后端断连时已落库），打个标记
+      const mark = document.createElement("span");
+      mark.className = "pause-mark";
+      mark.textContent = "⏸ 已暂停 · 部分回答已保留";
+      msgEl.appendChild(mark);
+      toast("⏸ 已暂停输出，已生成的内容已保留（可重新生成继续）");
+    } else {
+      rawContent += "\n[错误] " + e.message;
+      contentDiv.textContent = rawContent;
+      contentDiv.dataset.raw = rawContent;
+    }
   }
 
   // 结束态：停动画、打标、一次性渲染 Markdown
@@ -2731,6 +2804,7 @@ async function sendChat(text, regenId) {
   if (proposalReady) await reloadCurrentConv();
   streamingCid = null;
   setSendState();
+  _abortByCid.delete(myCid);
   loadConversations();
   refreshMemoryBar();
   drainQueue();
@@ -3439,11 +3513,10 @@ $("#btn-multi-all").onclick = () => {
 function appendMessage(role, text, typing = false, extra = {}) {
   const animate = extra.animate !== false;
   const el = document.createElement("div");
-  el.className = `msg ${role}${typing ? " typing" : ""}${animate ? " anim" : ""}${extra.queued ? " queued" : ""}`;
+  el.className = `msg ${role}${typing ? " typing" : ""}${animate ? " anim" : ""}`;
   el.dataset.msgId = extra.msgId || "";
   el.dataset.group = extra.group || "";
   el.dataset.vno = extra.versionNo || 1;
-  if (extra.queued) el.dataset.qid = extra.qid || "";
 
   if (role === "assistant") {
     el.innerHTML =
@@ -3557,12 +3630,6 @@ function appendMessage(role, text, typing = false, extra = {}) {
       copyText(content.dataset.raw || content.textContent);
     el.querySelector('[data-op="edit"]').onclick = () => startEdit(el, content);
     el.querySelector('[data-op="del"]').onclick = () => deleteMessageBubble(el);
-    if (extra.queued) {
-      const mark = document.createElement("span");
-      mark.className = "queue-mark";
-      mark.textContent = "⏳ 排队中";
-      el.appendChild(mark);
-    }
   }
 
   $("#messages").appendChild(el);

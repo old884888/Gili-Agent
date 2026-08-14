@@ -71,7 +71,6 @@
         <button class="learn-chip" data-cmd="记一下：">📝 记笔记</button>
       </div>
       <div class="spacer"></div>
-      <span id="queue-badge" class="queue-badge hidden" title="点击清空发送队列"></span>
       <button id="btn-mem-usage" class="mem-bar-btn" title="查看记忆容量详情">
         <div class="mem-bar">
           <div class="mem-fill mem-stable" id="mem-stable"></div>
@@ -82,6 +81,7 @@
       </button>
       <input type="file" id="in-attach" hidden multiple>
     </div>
+    <div id="queue-list" class="queue-list hidden"></div>
     <footer class="composer">
       <textarea id="input" rows="1" placeholder="和 Gili 聊聊…（Enter 发送，Shift+Enter 换行）"></textarea>
       <button id="btn-send" class="btn primary" data-ui-pop>发送</button>
