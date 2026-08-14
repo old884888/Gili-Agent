@@ -659,6 +659,7 @@ async def chat(req: ChatRequest):
         msgs_for_llm = list(messages)
         needs_stream = True
         error_detail = None
+        search_log: dict | None = None  # 联网检索日志（前端搜索卡）
 
         # 用户消息先落库：即使流式失败/断连，消息与 token 成本都不丢
         if not regen:
@@ -682,6 +683,8 @@ async def chat(req: ChatRequest):
                         reasoning_text = r1["reasoning_content"]
                         for ch in _chunks(reasoning_text, 16):
                             yield _sse({"event": "delta", "kind": "reasoning", "text": ch})
+                    # 联网检索日志：前端渲染搜索卡（关键词/网页/可展开详情）
+                    search_log = {"queries": [], "per_query": [], "sources": []}
                     # 工具结果进【波动区】尾部（缓存只保住它之前的前缀）
                     tool_msgs = [{
                         "role": "assistant",
@@ -704,7 +707,11 @@ async def chat(req: ChatRequest):
                             tool_msgs.append({
                                 "role": "tool", "tool_call_id": tc["id"], "content": content,
                             })
-                            yield _sse({"event": "tool", "query": url, "results": 0})
+                            src = {"title": url, "url": url}
+                            search_log["queries"].append(url)
+                            search_log["per_query"].append([src])
+                            search_log["sources"].append(src)
+                            yield _sse({"event": "tool", "query": url, "results": 0, "sources": [src]})
                             continue
                         try:
                             query = (json.loads(tc["arguments"]) or {}).get("query", "")
@@ -719,12 +726,19 @@ async def chat(req: ChatRequest):
                         content = search.format_results(result, query) or (
                             f"搜索失败：无法获取「{query}」的结果，请告知用户稍后重试或换关键词。"
                         )
+                        srcs = [
+                            {"title": s.get("title") or s.get("url", ""), "url": s.get("url", "")}
+                            for s in (result.get("sources") or []) if s.get("url")
+                        ]
+                        search_log["queries"].append(query)
+                        search_log["per_query"].append(srcs)
+                        search_log["sources"].extend(srcs)
                         tool_msgs.append({
                             "role": "tool", "tool_call_id": tc["id"], "content": content,
                         })
                         yield _sse({
                             "event": "tool", "query": query,
-                            "results": len(result.get("sources") or []),
+                            "results": len(srcs), "sources": srcs,
                         })
                     msgs_for_llm = [*msgs_for_llm, *tool_msgs]
                 else:
@@ -760,6 +774,27 @@ async def chat(req: ChatRequest):
         if usage and needs_stream:
             metrics.record(usage, req.params.model, latency, cache_invalidated, conversation_id=cid)
 
+        # 联网检索的网页来源 → 引用来源（带编号，前端可点击跳转原文）
+        web_sources: list[dict] = []
+        if search_log and search_log.get("sources"):
+            seen: set[str] = set()
+            for s in search_log["sources"]:
+                if s.get("url") and s["url"] not in seen:
+                    seen.add(s["url"])
+                    web_sources.append({
+                        "ref": len(web_sources) + 1,
+                        "id": None,
+                        "source_type": "web",
+                        "source_id": None,
+                        "project_id": None,
+                        "title": s.get("title") or s.get("url", ""),
+                        "heading": "",
+                        "excerpt": "",
+                        "url": s["url"],
+                        "score": 0,
+                    })
+        msg_sources = web_sources if web_sources else knowledge.source_meta(kb_sources)
+
         # 落库（提示词已构建完，此时追加不影响本次请求）
         if regen:
             db.deactivate_group(version_group)
@@ -768,8 +803,8 @@ async def chat(req: ChatRequest):
             new_msg = db.add_message(
                 cid, "assistant", raw, reasoning=reasoning_text,
                 version_group=version_group, version_no=version_no,
-                sources=json.dumps(knowledge.source_meta(kb_sources), ensure_ascii=False)
-                if kb_sources else None,
+                sources=json.dumps(msg_sources, ensure_ascii=False) if msg_sources else None,
+                search_log=json.dumps(search_log, ensure_ascii=False) if search_log else None,
             )
         db.touch(cid)
 
@@ -795,7 +830,8 @@ async def chat(req: ChatRequest):
             "version_group": version_group or new_msg["id"],
             "version_no": version_no or 1,
             "versions_count": db.count_versions(version_group or new_msg["id"]),
-            "sources": knowledge.source_meta(kb_sources),
+            "sources": msg_sources,
+            "search_log": search_log,
         })
         # 学习档案联动：判断是否学完某章，生成待确认建议气泡
         if not regen and provider.name == "deepseek" and db.get_learning_project_by_conv(cid):

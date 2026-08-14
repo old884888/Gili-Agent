@@ -226,6 +226,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("learning_projects", "conversation_id", "ALTER TABLE learning_projects ADD COLUMN conversation_id TEXT"),
         ("messages", "quick_options", "ALTER TABLE messages ADD COLUMN quick_options TEXT"),
         ("messages", "sources", "ALTER TABLE messages ADD COLUMN sources TEXT"),
+        ("messages", "search_log", "ALTER TABLE messages ADD COLUMN search_log TEXT"),
         ("conversations", "memory_group", "ALTER TABLE conversations ADD COLUMN memory_group TEXT"),
         ("learning_projects", "current_chapter", "ALTER TABLE learning_projects ADD COLUMN current_chapter TEXT"),
         ("learning_projects", "goal", "ALTER TABLE learning_projects ADD COLUMN goal TEXT DEFAULT ''"),
@@ -373,8 +374,9 @@ def add_message(
     is_active: int = 1,
     quick_options: str | None = None,
     sources: str | None = None,
+    search_log: str | None = None,
 ) -> dict:
-    """落库消息。quick_options / sources：JSON 字符串，供前端渲染选项卡与引用。"""
+    """落库消息。quick_options / sources / search_log：JSON 字符串，供前端渲染选项卡/引用/联网详情。"""
     mid = "m" + uuid.uuid4().hex[:8]
     if version_group is None:
         version_group = mid  # 每条消息默认自成一组，重新生成时同组产生新版本
@@ -393,11 +395,12 @@ def add_message(
         "is_active": is_active,
         "quick_options": quick_options,
         "sources": sources,
+        "search_log": search_log,
     }
     _exec(
         """INSERT INTO messages (id, conversation_id, role, content, tokens, summarized, created_at,
-                                 reasoning, edited_at, version_group, version_no, is_active, quick_options, sources)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                 reasoning, edited_at, version_group, version_no, is_active, quick_options, sources, search_log)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         tuple(row.values()),
     )
     return row

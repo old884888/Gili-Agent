@@ -387,8 +387,94 @@ function renderRefsDrawer() {
   if (window.GiliUI) GiliUI.stagger(list);
 }
 
+// ---------- 联网检索卡 + 网页角标 ----------
+
+function renderSearchCard(msgEl, log, live = false) {
+  let card = msgEl.querySelector(".search-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "search-card" + (live ? " live" : "");
+    const content = msgEl.querySelector(".content");
+    if (content) content.after(card);
+    else msgEl.appendChild(card);
+  }
+  card.classList.toggle("live", !!live);
+  const queries = log.queries || [];
+  const perQuery = log.perQuery || [];
+  const sources = log.sources || [];
+  card.innerHTML =
+    '<button type="button" class="sc-head">' +
+    '<span class="sc-icon">' + (live ? '<i class="sc-spin"></i>' : "🌐") + "</span>" +
+    '<span class="sc-status">' +
+    (live
+      ? "正在联网检索…"
+      : "联网检索：" + queries.length + " 个关键词 · 参考 " + sources.length + " 个网页") +
+    "</span>" +
+    '<span class="sc-chevron">▾</span></button>' +
+    '<div class="sc-body">' +
+    queries
+      .map((q, i) => {
+        const srcs = Array.isArray(perQuery[i]) ? perQuery[i] : [];
+        return (
+          '<div class="sc-q">' +
+          '<div class="sc-q-label">🔎 关键词 ' + (i + 1) + "：" + esc(q) + "</div>" +
+          (srcs.length
+            ? '<div class="sc-srcs">' +
+              srcs
+                .map(
+                  (s) =>
+                    '<a class="sc-src" href="' + esc(s.url) + '" target="_blank" rel="noopener">' +
+                    "↗ " + esc(s.title || s.url) + "</a>"
+                )
+                .join("") +
+              "</div>"
+            : "") +
+          "</div>"
+        );
+      })
+      .join("") +
+    "</div>";
+  card.querySelector(".sc-head").onclick = () => {
+    card.classList.toggle("open");
+  };
+  return card;
+}
+
+function renderWebChips(msgEl, sources) {
+  const web = (sources || []).filter((s) => s.source_type === "web" && s.url);
+  if (!web.length) return;
+  let row = msgEl.querySelector(".web-chips");
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "web-chips";
+    const content = msgEl.querySelector(".content");
+    if (content) content.after(row);
+    else msgEl.appendChild(row);
+  }
+  const host = (u) => {
+    try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u.slice(0, 24); }
+  };
+  row.innerHTML =
+    web
+      .slice(0, 3)
+      .map(
+        (s) =>
+          '<button type="button" class="web-chip" data-url="' + esc(s.url) +
+          '" title="' + esc(s.title || s.url) + '">🔗 ' + esc(host(s.url)) + "</button>"
+      )
+      .join("") +
+    (web.length > 3 ? '<span class="web-more">+' + (web.length - 3) + "</span>" : "");
+  row.querySelectorAll(".web-chip").forEach((b) => {
+    b.onclick = () => window.open(b.dataset.url, "_blank", "noopener");
+  });
+}
+
 async function openRefSource(source) {
   if (!source) return;
+  if (source.source_type === "web" && source.url) {
+    window.open(source.url, "_blank", "noopener");
+    return;
+  }
   if (source.source_type === "memory") {
     const tab = document.querySelector('.tab[data-tab="memory"]');
     if (tab) tab.click();
@@ -2217,6 +2303,7 @@ async function sendChat(text, regenId) {
   let rawContent = "";
   let rawReasoning = "";
   let proposalReady = false;
+  let searchLog = null;
   flushStreamRender();
   flushReasoningRender();
   _lastStreamPaint = 0;
@@ -2271,10 +2358,14 @@ async function sendChat(text, regenId) {
         if (evt.event === "start") {
           currentConv = evt.conversation_id || currentConv;
         } else if (evt.event === "tool") {
-          const tip = document.createElement("div");
-          tip.className = "tool-tip";
-          tip.textContent = `🔎 已联网搜索「${evt.query}」（${evt.results} 条结果）`;
-          msgEl.insertBefore(tip, contentDiv);
+          // 联网检索卡：live 动画 + 逐关键词/网页累积
+          if (!searchLog) searchLog = { queries: [], perQuery: [], sources: [] };
+          searchLog.queries.push(evt.query || "");
+          searchLog.perQuery.push(Array.isArray(evt.sources) ? evt.sources : []);
+          (evt.sources || []).forEach((s) => {
+            if (!searchLog.sources.some((x) => x.url === s.url)) searchLog.sources.push(s);
+          });
+          renderSearchCard(msgEl, searchLog, true);
         } else if (evt.event === "delta") {
           if (evt.kind === "reasoning") {
             rawReasoning += evt.text;
@@ -2294,6 +2385,11 @@ async function sendChat(text, regenId) {
           msgEl.dataset.msgId = evt.message_id || "";
           msgEl.dataset.group = evt.version_group || msgEl.dataset.msgId;
           msgEl.dataset.vno = evt.version_no || 1;
+          if (evt.sources && evt.sources.length) msgEl._sources = evt.sources;
+          if (evt.search_log) {
+            searchLog = evt.search_log;
+            renderSearchCard(msgEl, searchLog, false);
+          }
           if (regenId) {
             const oldNode = document.querySelector(`.msg[data-msg-id="${regenId}"]`);
             if (oldNode) {
@@ -2345,6 +2441,7 @@ async function sendChat(text, regenId) {
   if (msgEl._sources) {
     renderCitations(contentDiv, msgEl._sources);
     updateRefsButton(msgEl._sources);
+    renderWebChips(msgEl, msgEl._sources);
   }
   scrollToBottom(true);
   if (proposalReady) await reloadCurrentConv();
@@ -3091,7 +3188,9 @@ function appendMessage(role, text, typing = false, extra = {}) {
     if (Array.isArray(extra.sources) && extra.sources.length) {
       el._sources = extra.sources;
       renderCitations(content, extra.sources);
+      renderWebChips(el, extra.sources);
     }
+    if (extra.searchLog) renderSearchCard(el, extra.searchLog, false);
     if (extra.reasoning) addReasoningBlock(el, extra.reasoning);
     addVersionBar(el, extra.versionNo || 1, extra.versions || 0);
 
@@ -3210,7 +3309,12 @@ async function openConversation(cid, title, favorite = false) {
       if (m.sources) {
         try { sources = JSON.parse(m.sources); } catch { /* 旧格式忽略 */ }
       }
+      let searchLog = null;
+      if (m.search_log) {
+        try { searchLog = JSON.parse(m.search_log); } catch { /* 旧格式忽略 */ }
+      }
       appendMessage(m.role === "assistant" ? "assistant" : "user", m.content, false, {
+        searchLog,
         reasoning: m.reasoning || "",
         versions: m.versions_count || 0,
         versionNo: m.version_no || 1,
