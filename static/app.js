@@ -45,7 +45,7 @@ function toast(msg) {
 // ---------- 状态 ----------
 
 let currentConv = null;
-let streaming = false;
+let streamingCid = null; // 正在输出的会话（每会话独立输出，互不阻塞）
 
 // ---------- Markdown 渲染（marked + DOMPurify + mermaid，多 CDN 兜底） ----------
 
@@ -404,12 +404,13 @@ function renderSearchCard(msgEl, log, live = false) {
   const queries = log.queries || [];
   const perQuery = log.per_query || [];
   const sources = log.sources || [];
+  const liveLines = log.lines || [];
   card.innerHTML =
     '<button type="button" class="sc-head">' +
     '<span class="sc-icon">' + (live ? '<i class="sc-spin"></i>' : "🌐") + "</span>" +
     '<span class="sc-status">' +
     (live
-      ? "正在联网检索…"
+      ? "正在联网检索…（" + queries.length + " 关键词 · " + sources.length + " 网页）"
       : "联网检索：" + queries.length + " 个关键词 · 参考 " + sources.length + " 个网页") +
     "</span>" +
     (live
@@ -418,6 +419,11 @@ function renderSearchCard(msgEl, log, live = false) {
         ? '<span class="sc-more">查看全部</span>'
         : "") +
     '<span class="sc-chevron">▾</span></button>' +
+    (live && liveLines.length
+      ? '<div class="sc-live">' +
+        liveLines.slice(-6).map((l) => '<div class="sc-live-line">' + esc(l) + "</div>").join("") +
+        "</div>"
+      : "") +
     '<div class="sc-body">' +
     queries
       .map((q, i) => {
@@ -444,6 +450,8 @@ function renderSearchCard(msgEl, log, live = false) {
   card.querySelector(".sc-head").onclick = () => {
     card.classList.toggle("open");
   };
+  const liveBox = card.querySelector(".sc-live");
+  if (liveBox) liveBox.scrollTop = liveBox.scrollHeight;
   return card;
 }
 
@@ -1020,14 +1028,15 @@ async function sendMessage() {
   if (!text) return;
   $("#input").value = "";
   autoResizeInput();
-  if (streaming) {
+  // 只有"当前会话"在输出时才入队；别的会话输出中不影响本会话直接发送
+  if (streamingCid === currentConv) {
     if (sendQueue.length >= QUEUE_MAX) {
       toast("发送队列已满（" + QUEUE_MAX + " 条），等当前回复完成后再发");
       return;
     }
     const qid = "q" + ++_queueSeq;
     appendMessage("user", text, false, { queued: true, qid });
-    sendQueue.push({ text, regenId: null, qid });
+    sendQueue.push({ text, regenId: null, qid, cid: currentConv });
     updateQueueBadge();
     toast("已加入发送队列：当前回复完成后自动发送");
     return;
@@ -1037,12 +1046,13 @@ async function sendMessage() {
 
 // 轮次边界领取队列中的下一条（DSH 语义：当前轮结束后按序驱动）
 async function drainQueue() {
-  if (queueBusy || streaming) return;
-  const next = sendQueue.shift();
-  if (!next) {
+  if (queueBusy || streamingCid === currentConv) return;
+  const idx = sendQueue.findIndex((q) => q.cid === currentConv);
+  if (idx === -1) {
     updateQueueBadge();
     return;
   }
+  const next = sendQueue.splice(idx, 1)[0];
   updateQueueBadge();
   const placeholder = document.querySelector('.msg.user.queued[data-qid="' + next.qid + '"]');
   if (placeholder) placeholder.remove(); // 占位气泡移除，sendChat 会重新追加正式气泡
@@ -1072,7 +1082,7 @@ function updateQueueBadge() {
 
 function setSendState() {
   $("#btn-send").disabled = false;
-  $("#btn-send").textContent = streaming ? "加入队列" : "发送";
+  $("#btn-send").textContent = streamingCid === currentConv ? "加入队列" : "发送";
 }
 
 const input = $("#input");
@@ -2319,6 +2329,7 @@ async function loadConversations() {
     // 数据未变：只更新选中态，避免每次刷新整列重绘（也是卡片慢/闪的原因之一）
     const signature = JSON.stringify({
       mode: multiMode,
+      streamingCid,
       items: (items || []).map((c) => [
         c.id, c.title, c.updated_at, c.msg_count, c.favorite,
         c.project_id, c.project_subject, c.memory_group, c.memory_group_size,
@@ -2361,6 +2372,7 @@ async function loadConversations() {
             ${isLearning ? '<span class="badge lc-badge">🎓 学习</span>' : ""}
             ${c.memory_group ? `<span class="badge share-badge">🔗 共享组 ${c.memory_group_size || 0}</span>` : ""}
             <span>${fmtTime(c.updated_at)} · ${c.msg_count} 条</span>
+            ${c.id === streamingCid ? '<span class="badge conv-streaming"><i class="sc-spin"></i> 输出中</span>' : ""}
           </div>
         </div>
         ${multiMode ? "" : `<div class="conv-ops">
@@ -2559,7 +2571,8 @@ function addReasoningBlock(el, reasoning, live = false) {
 // ---------- 流式发送（逐块淡入 + 思考脉冲 + 生成呼吸光） ----------
 
 async function sendChat(text, regenId) {
-  if (streaming) return;
+  if (streamingCid === currentConv) return; // 同一会话已有流，交给队列
+  const myCid = currentConv; // 捕获发送时的会话（切走也不影响）
   if (!regenId) appendMessage("user", text);
   const msgEl = appendMessage("assistant", "", true);
   const contentDiv = msgEl.querySelector(".content");
@@ -2571,8 +2584,9 @@ async function sendChat(text, regenId) {
   flushReasoningRender();
   _lastStreamPaint = 0;
   _lastReasoningPaint = 0;
-  streaming = true;
+  streamingCid = myCid;
   setSendState();
+  loadConversations(); // 刷新卡片"输出中"状态
 
   try {
     const res = await fetch("/api/chat", {
@@ -2595,7 +2609,7 @@ async function sendChat(text, regenId) {
         throw new Error("chat 响应异常");
       }
       if (j.status === "created") toast("🎉 学习项目创建成功！");
-      streaming = false;
+      streamingCid = null;
       setSendState();
       await reloadCurrentConv();
       return;
@@ -2632,6 +2646,9 @@ async function sendChat(text, regenId) {
           (evt.sources || []).forEach((s) => {
             if (!searchLog.sources.some((x) => x.url === s.url)) searchLog.sources.push(s);
           });
+          searchLog.lines = searchLog.lines || [];
+          searchLog.lines.push("🔎 正在搜索「" + evt.query + "」…");
+          searchLog.lines.push("✓ 「" + evt.query + "」→ " + (evt.results || 0) + " 条结果");
           renderSearchCard(msgEl, searchLog, true);
         } else if (evt.event === "delta") {
           if (evt.kind === "reasoning") {
@@ -2712,7 +2729,7 @@ async function sendChat(text, regenId) {
   }
   scrollToBottom(true);
   if (proposalReady) await reloadCurrentConv();
-  streaming = false;
+  streamingCid = null;
   setSendState();
   loadConversations();
   refreshMemoryBar();
@@ -3606,6 +3623,7 @@ async function openConversation(cid, title, favorite = false) {
     scrollToBottom(true);
     refreshMemoryBar();
     refreshMetrics();
+    drainQueue(); // 切回本会话时续发它的排队消息
   } catch (e) {
     toast("消息加载失败: " + e.message);
   }

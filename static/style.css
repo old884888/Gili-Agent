@@ -253,8 +253,18 @@ h3:first-child { margin-top: 0; }
   color: var(--dim); font-size: calc(12px * var(--fs)); line-height: 1.55;
   border-left: 2px solid var(--line); padding-left: 10px; margin-bottom: 8px;
   white-space: pre-wrap; word-break: break-word;
+  /* 收起态：小窗口 + 顶部渐隐，尾部持续滚动"直播" */
+  max-height: 58px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 24%, #000 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 24%, #000 100%);
 }
-.msg .reasoning.hidden { display: none; }
+.msg .reasoning-wrap.open .reasoning {
+  max-height: min(55vh, 700px);
+  overflow-y: auto;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
 
 /* 消息操作条（hover 显示） */
 .msg { position: relative; }
@@ -1043,6 +1053,24 @@ select:focus { outline: none; border-color: var(--accent); }
 }
 .sc-head:hover .sc-more { background: rgba(91, 140, 255, 0.22); border-color: rgba(91, 140, 255, 0.55); }
 .search-card.live .sc-status { color: rgba(147, 197, 253, 0.9); }
+.sc-live {
+  max-height: 46px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 0 12px 8px;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 30%, #000 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 30%, #000 100%);
+}
+.sc-live-line {
+  font-size: calc(10.5px * var(--fs));
+  color: rgba(148, 163, 184, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.6;
+}
 .sc-chevron { font-size: calc(9px * var(--fs)); transition: transform 0.18s ease; flex-shrink: 0; }
 .search-card.open .sc-chevron { transform: rotate(180deg); }
 .sc-body {
@@ -1485,6 +1513,8 @@ input[type="text"]:focus, input[type="password"]:focus, textarea:focus, select:f
 }
 .fav-star { color: #fbbf24; text-shadow: 0 0 8px rgba(251, 191, 36, 0.6); }
 .conv-item { position: relative; }
+.conv-streaming { color: #93c5fd; background: rgba(91, 140, 255, 0.12); border-color: rgba(91, 140, 255, 0.3); display: inline-flex; align-items: center; gap: 4px; }
+.conv-streaming .sc-spin { width: 9px; height: 9px; border-width: 1.5px; }
 .conv-ops {
   position: absolute;
   top: 8px; right: 8px;
